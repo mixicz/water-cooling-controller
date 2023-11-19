@@ -29,6 +29,10 @@
 typedef struct {
     uint8_t version;
     uint8_t fans;
+    uint16_t fan_ramp_up_step_time; // time in ms between 2 steps of FAN speed ramp up
+    uint16_t fan_ramp_down_step_time; // time in ms between 2 steps of FAN speed ramp down
+    uint16_t pump_ramp_up_step_time; // time in ms between 2 steps of pump speed ramp up
+    uint16_t pump_ramp_down_step_time; // time in ms between 2 steps of pump speed ramp down
 } config_t;
 
 typedef struct {
@@ -64,6 +68,10 @@ eeprom_t eeprom = {
     .config = {
         .version = EEPROM_VERSION,
         .fans = 5,
+        .fan_ramp_up_step_time = 6000 / FAN_PWM_MAX,        // 6 seconds to ramp up from 0 to 100% speed
+        .fan_ramp_down_step_time = 30000 / FAN_PWM_MAX,     // 30 seconds to ramp up from 100% to 0% speed
+        .pump_ramp_up_step_time = 4000 / FAN_PWM_MAX,       // 4 seconds to ramp up from 0 to 100% speed
+        .pump_ramp_down_step_time = 30000 / FAN_PWM_MAX,    // 30 seconds to ramp up from 100% to 0% speed
     },
     .fan_config = {
         { .gpio_port = TWR_GPIO_P9, .pwm_port = TWR_PWM_P6},
@@ -100,16 +108,18 @@ typedef struct {
     bool calibrated;
     bool pwm_control;
     bool calibration_in_progress;
-    uint16_t pwm;
+    bool ramp_in_progress;
+    uint16_t pwm_target;
+    uint16_t pwm_current;
     uint16_t rpm;
 } fan_runtime_t;
 
 fan_runtime_t fan_runtime[MAX_FANS] = {
-    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm = 0, .rpm = 0},
-    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm = 0, .rpm = 0},
-    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm = 0, .rpm = 0},
-    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm = 0, .rpm = 0},
-    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm = 0, .rpm = 0},
+    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},
+    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},
+    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},
+    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},
+    { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},
 };
 
 
@@ -123,6 +133,8 @@ twr_button_t button;
 twr_tmp112_t tmp112;
 uint16_t button_click_count = 0;
 
+// helper variables for FAN control
+uint8_t fan_list[MAX_FANS] = {0};
 
 // ==== FAN RPM reading ====
 
@@ -208,6 +220,45 @@ void _pwm_init(twr_pwm_channel_t channel, int32_t pwm_max)
     }
 }
 
+// return ramp up/down step time in ms
+uint16_t fan_step_time(uint8_t fan, bool up)
+{
+    if (fan_user_config[fan].is_pump) {
+        if (up)
+            return config->pump_ramp_up_step_time;
+        else
+            return config->pump_ramp_down_step_time;
+    } else {
+        if (up)
+            return config->fan_ramp_up_step_time;
+        else
+            return config->fan_ramp_down_step_time;
+    }
+}
+
+// FAN ramp up/down step
+void fan_ramp_step(void * ptr_fan)
+{
+    uint8_t fan = *(uint8_t*)ptr_fan;
+    int direction = 0;
+    if (fan_runtime[fan].pwm_current == fan_runtime[fan].pwm_target) {
+        fan_runtime[fan].ramp_in_progress = false;
+        twr_scheduler_unregister(twr_scheduler_get_current_task_id());
+        return;
+    } else if (fan_runtime[fan].pwm_current < fan_runtime[fan].pwm_target) {
+        fan_runtime[fan].pwm_current++;
+        direction = 1;
+    } else {
+        fan_runtime[fan].pwm_current--;
+        direction = -1;
+    }
+#ifdef DEBUG
+    twr_log_debug("fan_ramp_step(): FAN=%i, PWM=%i, direction=%i", fan, fan_runtime[fan].pwm_current, direction);
+#endif 
+    twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm_current);
+    twr_scheduler_plan_current_relative(fan_step_time(fan, direction > 0));
+}
+
 // FAN set speed using calibration data
 void fan_set_speed(uint8_t fan, float speed)
 {
@@ -224,28 +275,35 @@ void fan_set_speed(uint8_t fan, float speed)
         float index = (float)(FAN_CALIBRATION_STEPS-1) * speed;
         float weight = index - (int)index;
         if ((int)index >= FAN_CALIBRATION_STEPS-1)
-            fan_runtime[fan].pwm = fan_calibration[fan].points[FAN_CALIBRATION_STEPS-1];
+            fan_runtime[fan].pwm_target = fan_calibration[fan].points[FAN_CALIBRATION_STEPS-1];
         else if ((int)index < 0)
-            fan_runtime[fan].pwm = fan_calibration[fan].points[0];
+            fan_runtime[fan].pwm_target = fan_calibration[fan].points[0];
         else
             // linear interpolation between 2 points in calibration data (PWM values)
-            fan_runtime[fan].pwm = (uint16_t)((float)fan_calibration[fan].points[(int)index] * (1.0 - weight) + (float)fan_calibration[fan].points[(int)index+1] * weight);
+            fan_runtime[fan].pwm_target = (uint16_t)((float)fan_calibration[fan].points[(int)index] * (1.0 - weight) + (float)fan_calibration[fan].points[(int)index+1] * weight);
         // cap PWM value to minimum PWM value as detected by calibration process
-        if (fan_runtime[fan].pwm < fan_calibration[fan].min_pwm)
-            fan_runtime[fan].pwm = fan_calibration[fan].min_pwm;
+        if (fan_runtime[fan].pwm_target < fan_calibration[fan].min_pwm)
+            fan_runtime[fan].pwm_target = fan_calibration[fan].min_pwm;
     } else {
-        fan_runtime[fan].pwm = (uint16_t)((float)FAN_PWM_MAX * speed);
+        fan_runtime[fan].pwm_target = (uint16_t)((float)FAN_PWM_MAX * speed);
         // cap PWM value to minimum PWM value according to specification
-        if (fan_runtime[fan].pwm < FAN_PWM_MIN)
-            fan_runtime[fan].pwm = FAN_PWM_MIN;
+        if (fan_runtime[fan].pwm_target < FAN_PWM_MIN)
+            fan_runtime[fan].pwm_target = FAN_PWM_MIN;
     }
     // cap PWM value to maximum PWM value
-    if (fan_runtime[fan].pwm > FAN_PWM_MAX)
-        fan_runtime[fan].pwm = FAN_PWM_MAX;
+    if (fan_runtime[fan].pwm_target > FAN_PWM_MAX)
+        fan_runtime[fan].pwm_target = FAN_PWM_MAX;
 #ifdef DEBUG
-    twr_log_debug("fan_set_speed(): FAN=%i, computed: speed=%.2f, PWM=%i", fan, speed, fan_runtime[fan].pwm);
+    twr_log_debug("fan_set_speed(): FAN=%i, computed: speed=%.2f, PWM=%i -> %i", fan, speed, fan_runtime[fan].pwm_current, fan_runtime[fan].pwm_target);
 #endif
-    twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm);
+    if (fan_runtime[fan].pwm_current == fan_runtime[fan].pwm_target)
+        return;
+    // TODO: stat ramp up/down callback
+    // twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm_target);
+    if (fan_runtime[fan].ramp_in_progress == false) {
+        fan_runtime[fan].ramp_in_progress = true;
+        twr_scheduler_register(fan_ramp_step, &fan_list[fan], twr_tick_get() + fan_step_time(fan, fan_runtime[fan].pwm_target > fan_runtime[fan].pwm_current));
+    }
 }
 
 // ==== FAN calibration ====
@@ -258,7 +316,6 @@ struct fan_calibration_measure_t
 };
 
 struct fan_calibration_measure_t fan_calibration_measure[MAX_FANS][FAN_CALIBRATION_STEPS];
-uint8_t fan_list[MAX_FANS] = {0};
 
 // compute calibration data from measured values
 void fan_compute_calibration(uint8_t fan)
@@ -455,7 +512,7 @@ void fan_calibration_step(void * ptr_fan)
     step[fan]++;
     if (step[fan] > FAN_CALIBRATION_STEPS) {
         // set FAN speed to previous value
-        twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm);
+        twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm_current);
         fan_runtime[fan].calibration_in_progress = false;
         step[fan] = 0;
         twr_scheduler_unregister(twr_scheduler_get_current_task_id());
@@ -489,14 +546,13 @@ void fan_calibration_start(uint8_t fan)
 #endif
     fan_calibration[fan].calibrated = false;
     fan_runtime[fan].calibration_in_progress = true;
-    fan_list[fan] = fan;
     twr_pwm_set(fan_config[fan].pwm_port, FAN_PWM_MAX);
     twr_scheduler_register(fan_calibration_step, &fan_list[fan], twr_tick_get() + FAN_CALIBRATION_TIME_INIT);
 }
 
 
 
-#define FAN_SPEED_STEP 0.1
+#define FAN_SPEED_STEP 0.6
 // Button event callback
 void button_event_handler(twr_button_t *self, twr_button_event_t event, void *event_param)
 {
@@ -568,6 +624,7 @@ void application_init(void)
     // setup PWM for all configured FAN GPIO ports
     for (uint8_t f = 0; f < config->fans; f++)
     {
+        fan_list[f] = f;
         _pwm_init(fan_config[f].pwm_port, FAN_PWM_MAX);
         fan_set_speed(f, FAN_SPEED_INIT);
         twr_pwm_enable(fan_config[f].pwm_port);
