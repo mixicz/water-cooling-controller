@@ -2,6 +2,23 @@
 // SDK API description https://sdk.hardwario.com/
 // Forum https://forum.hardwario.com/
 
+/*
+TODO list:
+- 1-wire thermometer configuration
+- configurable names for all entities
+- ADC calibration
+- ADC periodic temperature readings
+- status LEDs via Adafruit PCA9685 PWM driver
+- save config and calibration data to EEPROM
+- load config and calibration data from EEPROM
+- automatic FAN calibration
+- performance profiles for FANs
+- MQTT - reporing temperatures, FAN speeds
+- MQTT - reporting alarms (unusually high temperature, FAN failure, start/stop calibration, ...)
+- MQTT - commands to set profile, start calibration, ...
+- MQTT - set config values
+*/
+
 #include <application.h>
 
 // Application version
@@ -10,6 +27,13 @@
 #define EEPROM_VERSION          0x01
 
 // #define DEBUG   true   // not needed, DEBUG is defined in ninja build file
+
+#ifdef DEBUG
+// #define DEBUG_FAN_CALIBRATION   true
+// #define DEBUG_ONEWIRE           true
+// #define DEBUG_ADC               true
+#define DEBUG_ADC_CALIBRATION   true
+#endif
 
 // FAN configuration
 #define MAX_FANS 5
@@ -24,6 +48,12 @@
 #define FAN_CALIBRATION_TIME_INIT 8000
 #define FAN_CALIBRATION_TIME_RPM 500
 
+// ADC configuration
+#define ADC_CHANNEL_COUNT 6
+// #define ADC_CHANNEL_COUNT 4
+
+// 1-wire configuration
+# define OW_MAX_SLAVES 8
 
 // configuration structure
 typedef struct {
@@ -35,11 +65,13 @@ typedef struct {
     uint16_t pump_ramp_down_step_time; // time in ms between 2 steps of pump speed ramp down
 } config_t;
 
+// FAN HW configuration
 typedef struct {
     uint8_t gpio_port;
     uint8_t pwm_port;
 } fan_config_t;
 
+// FAN calibration data
 typedef struct {
     bool present;
     bool calibrated;
@@ -47,6 +79,19 @@ typedef struct {
     uint16_t min_pwm;   // minimum PWM value as detected by calibration process
     uint16_t points[FAN_CALIBRATION_STEPS]; // PWM values for calibration steps, index 0 is for 0% speed, index FAN_CALIBRATION_STEPS-1 is for 100% speed
 } fan_calibration_t;
+
+// ADC HW configuration
+typedef struct {
+    uint8_t adc_port;
+} adc_config_t;
+
+// ADC calibration data
+typedef struct {
+    bool present;
+    bool calibrated;
+    float offset;
+    float gain;
+} adc_calibration_t;
 
 // user defined values for FAN configuration
 typedef struct {
@@ -61,6 +106,8 @@ typedef struct {
     fan_config_t fan_config[MAX_FANS];
     fan_user_config_t fan_user_config[MAX_FANS];
     fan_calibration_t fan_calibration[MAX_FANS];
+    adc_config_t adc_config[ADC_CHANNEL_COUNT];
+    adc_calibration_t adc_calibration[ADC_CHANNEL_COUNT];
 } eeprom_t;
 
 eeprom_t eeprom = {
@@ -95,14 +142,33 @@ eeprom_t eeprom = {
         { .present = true, .calibrated = false, .min_pwm = FAN_PWM_MIN, .pwm_capable = true, .points = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
         { .present = true, .calibrated = false, .min_pwm = FAN_PWM_MIN, .pwm_capable = true, .points = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
         { .present = true, .calibrated = false, .min_pwm = FAN_PWM_MIN, .pwm_capable = true, .points = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-    }
+    },
+    .adc_config = {
+        { .adc_port = TWR_ADC_CHANNEL_A0},
+        { .adc_port = TWR_ADC_CHANNEL_A1},
+        { .adc_port = TWR_ADC_CHANNEL_A2},
+        { .adc_port = TWR_ADC_CHANNEL_A3},
+        { .adc_port = TWR_ADC_CHANNEL_A4},
+        { .adc_port = TWR_ADC_CHANNEL_A5},
+    },
+    .adc_calibration = {
+        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
+        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
+        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
+        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
+        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
+        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
+    },
 };
 
 config_t *config = &eeprom.config;
 fan_config_t *fan_config = eeprom.fan_config;
 fan_calibration_t *fan_calibration = eeprom.fan_calibration;
 fan_user_config_t *fan_user_config = eeprom.fan_user_config;
+adc_config_t *adc_config = eeprom.adc_config;
+adc_calibration_t *adc_calibration = eeprom.adc_calibration;
 
+// FAN runtime data
 typedef struct {
     bool enabled;
     bool calibrated;
@@ -122,6 +188,42 @@ fan_runtime_t fan_runtime[MAX_FANS] = {
     { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},
 };
 
+// 1-wire thermometer runtime data
+typedef struct {
+    bool enabled;
+    float temperature;
+} ow_runtime_t;
+
+uint64_t ow_slave_list[OW_MAX_SLAVES];
+uint8_t ow_slave_count = 0;
+twr_ds2484_t ds2482;
+twr_onewire_t ow;
+ow_runtime_t ow_runtime[OW_MAX_SLAVES] = {
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+};
+
+// ADC runtime data
+typedef struct {
+    bool enabled;
+    float temperature;
+    uint16_t raw;
+} adc_runtime_t;
+
+adc_runtime_t adc_runtime[ADC_CHANNEL_COUNT] = {
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+    { .enabled = false, .temperature = NAN},
+};
 
 // LED instance
 twr_led_t led;
@@ -252,7 +354,7 @@ void fan_ramp_step(void * ptr_fan)
         fan_runtime[fan].pwm_current--;
         direction = -1;
     }
-#ifdef DEBUG
+#ifdef DEBUG_FAN_CALIBRATION
     twr_log_debug("fan_ramp_step(): FAN=%i, PWM=%i, direction=%i", fan, fan_runtime[fan].pwm_current, direction);
 #endif 
     twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm_current);
@@ -262,7 +364,7 @@ void fan_ramp_step(void * ptr_fan)
 // FAN set speed using calibration data
 void fan_set_speed(uint8_t fan, float speed)
 {
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION            
     twr_log_debug("fan_set_speed(): FAN=%i, requested: speed=%.2f", fan, speed);
 #endif
     if (fan_runtime[fan].enabled == false || fan_runtime[fan].pwm_control == false || fan_runtime[fan].calibration_in_progress == true)
@@ -293,7 +395,7 @@ void fan_set_speed(uint8_t fan, float speed)
     // cap PWM value to maximum PWM value
     if (fan_runtime[fan].pwm_target > FAN_PWM_MAX)
         fan_runtime[fan].pwm_target = FAN_PWM_MAX;
-#ifdef DEBUG
+#ifdef DEBUG_FAN_CALIBRATION
     twr_log_debug("fan_set_speed(): FAN=%i, computed: speed=%.2f, PWM=%i -> %i", fan, speed, fan_runtime[fan].pwm_current, fan_runtime[fan].pwm_target);
 #endif
     if (fan_runtime[fan].pwm_current == fan_runtime[fan].pwm_target)
@@ -328,7 +430,7 @@ void fan_compute_calibration(uint8_t fan)
     fan_user_config[fan].min_speed = 0.2;
     fan_calibration[fan].min_pwm = FAN_PWM_MIN;
 
-#ifdef DEBUG
+#ifdef DEBUG_FAN_CALIBRATION
     twr_log_debug("fan_compute_calibration(): FAN %i computing calibration data", fan);
 #endif
 
@@ -343,7 +445,7 @@ void fan_compute_calibration(uint8_t fan)
     // if FAN is not connected, max_rpm will be 0
     if (max_rpm == 0)
     {
-#ifdef DEBUG
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("fan_compute_calibration(): FAN %i not connected, min_rpm=%i, max_rpm=%i", fan, min_rpm, max_rpm);
 #endif
         fan_calibration[fan].calibrated = false;
@@ -357,7 +459,7 @@ void fan_compute_calibration(uint8_t fan)
     uint16_t rpm_range = max_rpm - min_rpm;
     if ((float)rpm_range / (float)max_rpm < 0.2)
     {
-#ifdef DEBUG
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("fan_compute_calibration(): FAN %i not capable of PWM control, min_rpm=%i, max_rpm=%i", fan, min_rpm, max_rpm);
 #endif
         fan_calibration[fan].calibrated = true;
@@ -388,20 +490,20 @@ void fan_compute_calibration(uint8_t fan)
                 pwm10_max_rpm = fan_calibration_measure[fan][i].rpm;
         }
     }
-#ifdef DEBUG
+#ifdef DEBUG_FAN_CALIBRATION
     twr_log_debug("fan_compute_calibration(): FAN %i: RPM peaks of lower 20%% and 10%% PWM range, min20=%i, max20=%i, min10=%i, max10=%i", fan, pwm20_min_rpm, pwm20_max_rpm, pwm10_min_rpm, pwm10_max_rpm);
 #endif
     if ((float)(pwm20_max_rpm - pwm20_min_rpm) / (float)pwm20_max_rpm > 0.6)
     {
         if ((float)(pwm10_max_rpm - pwm10_min_rpm) / (float)pwm10_max_rpm > 0.6) {
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
             twr_log_debug("fan_compute_calibration(): FAN %i: lower 0-20%% of PWM range seems usable", fan);
 #endif
             fan_calibration[fan].calibrated = true;
             fan_user_config[fan].min_speed = 0.0;
             fan_calibration[fan].min_pwm = 0;
         } else {
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
             twr_log_debug("fan_compute_calibration(): FAN %i: lower 10-20%% of PWM range seems usable", fan);
 #endif
             fan_calibration[fan].calibrated = true;
@@ -415,7 +517,7 @@ void fan_compute_calibration(uint8_t fan)
         }
     }
 
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
     float rpm_deviation[FAN_CALIBRATION_STEPS];
 #endif
     // Compute calibration points from measured values
@@ -424,7 +526,7 @@ void fan_compute_calibration(uint8_t fan)
     {
         float speed = 1.0 - (float)i / (float)(FAN_CALIBRATION_STEPS-1);
         uint16_t rpm = (uint16_t)((float)max_rpm * speed);
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
         if (fan_calibration_measure[fan][i].rpm > 0) {
             rpm_deviation[i] = (float)(fan_calibration_measure[fan][i].rpm - rpm) / (float)rpm;
         } else {
@@ -450,7 +552,7 @@ void fan_compute_calibration(uint8_t fan)
             uint16_t pwm = (uint16_t)((float)pwm_low + (float)(pwm_high - pwm_low) * (float)(rpm - rpm_low) / (float)(rpm_high - rpm_low));
             if (pwm > FAN_PWM_MAX) {
                 pwm = FAN_PWM_MAX;
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
                 twr_log_debug("fan_compute_calibration(): FAN %i: PWM value overflow, speed=%.2f, pwm=%i, rpm=%i, pwm_low=%i, pwm_high=%i, rpm_low=%i, rpm_high=%i", 
                     fan, speed, pwm, rpm, pwm_low, pwm_high, rpm_low, rpm_high);
 #endif
@@ -461,7 +563,7 @@ void fan_compute_calibration(uint8_t fan)
             fan_calibration[fan].points[FAN_CALIBRATION_STEPS-1-i] = (uint16_t)((float)FAN_PWM_MAX * speed);
         }
     }
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
     // debug print of calibration data
     for (uint8_t i = 0; i < FAN_CALIBRATION_STEPS; i++) {
         uint16_t expected_pwm = (uint16_t)((float)FAN_PWM_MAX * (float)i / (float)(FAN_CALIBRATION_STEPS-1));
@@ -492,7 +594,7 @@ void fan_calibration_step(void * ptr_fan)
         uint16_t rpm = get_rpm(fan);
         // TODO: add counter to prevent infinite loop
         if (rpm != last_rpm[fan]) {
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
             twr_log_debug("fan_calibration_step(): FAN %i RPM stabilization step: %i != %i", fan, rpm, last_rpm[fan]);
 #endif
             last_rpm[fan] = rpm;
@@ -501,11 +603,11 @@ void fan_calibration_step(void * ptr_fan)
         }
         fan_calibration_measure[fan][step[fan]-1].rpm = rpm;
         last_rpm[fan] = 0;
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("fan_calibration_step(): FAN %i step %d, speed=%.2f (pwm=%d), prev rpm=%i", fan, step[fan], speed, pwm, fan_calibration_measure[fan][step[fan]-1].rpm);
 #endif
     } else {
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("fan_calibration_step(): FAN %i step 0, speed=%.2f (pwm=%d)", fan, speed, pwm);
 #endif
     }
@@ -516,7 +618,7 @@ void fan_calibration_step(void * ptr_fan)
         fan_runtime[fan].calibration_in_progress = false;
         step[fan] = 0;
         twr_scheduler_unregister(twr_scheduler_get_current_task_id());
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("fan_calibration_step(): FAN %i calibration done", fan);
         for (uint8_t i = 0; i < FAN_CALIBRATION_STEPS; i++)
             twr_log_debug("fan_calibration_step(): FAN %i measured values: pwm=%i, rpm=%i", fan, fan_calibration_measure[fan][i].pwm, fan_calibration_measure[fan][i].rpm);
@@ -525,7 +627,7 @@ void fan_calibration_step(void * ptr_fan)
         fan_compute_calibration(fan);
         // TODO: save calibration data to EEPROM
     } else {
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("fan_calibration_step(): FAN %i set PWM=%i", fan, pwm);
 #endif
         twr_pwm_set(fan_config[fan].pwm_port, pwm);
@@ -541,7 +643,7 @@ void fan_calibration_step(void * ptr_fan)
 // FAN calibration start
 void fan_calibration_start(uint8_t fan)
 {
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
     twr_log_debug("fan_calibration_start(): FAN %i calibration start", fan);
 #endif
     fan_calibration[fan].calibrated = false;
@@ -550,6 +652,321 @@ void fan_calibration_start(uint8_t fan)
     twr_scheduler_register(fan_calibration_step, &fan_list[fan], twr_tick_get() + FAN_CALIBRATION_TIME_INIT);
 }
 
+// ==== 1-wire with DS2482 ====
+// initiate temperature conversion on all 1-wire devices
+void ow_start_conversion()
+{
+    if (!twr_onewire_reset(&ow))
+    {
+#ifdef DEBUG_ONEWIRE
+        twr_log_debug("ow_start_conversion(): 1-wire not responding");
+#endif
+        return;
+    }
+    twr_onewire_skip_rom(&ow);
+    twr_onewire_write_byte(&ow, 0x44);
+}
+
+// read temperature from 1-wire device
+float ow_read_temperature(uint64_t * device_id)
+{
+    int16_t raw;
+    if (!twr_onewire_reset(&ow))
+    {
+#ifdef DEBUG_ONEWIRE
+        twr_log_debug("ow_read_temperature(%016llx): 1-wire not responding", *device_id);
+#endif
+        return NAN;
+    }
+    twr_onewire_select(&ow, device_id);
+    twr_onewire_write_byte(&ow, 0xBE);
+    raw = twr_onewire_read_byte(&ow);
+    raw |= (uint16_t)twr_onewire_read_byte(&ow) << 8;
+    float temperature = (float)raw / 16.0;
+#ifdef DEBUG_ONEWIRE
+    twr_log_debug("ow_read_temperature(%016llx): raw: %04x temperature: %.2f °C", *device_id, raw, temperature);
+#endif
+    return temperature;
+}
+
+// read all temperatures from 1-wire devices
+void ow_read_temperatures()
+{
+    for (uint8_t i = 0; i < ow_slave_count; i++)
+    {
+        if (ow_runtime[i].enabled)
+            ow_runtime[i].temperature = ow_read_temperature(&ow_slave_list[i]);
+    }
+}
+
+// callback to periodically read temperatures from 1-wire devices
+void ow_read_temperatures_task(void * param)
+{
+    ow_read_temperatures();
+    ow_start_conversion();
+    twr_scheduler_plan_current_relative(1000);
+}
+
+void ow_init(void)
+{
+    static bool initialized = false;
+    if (initialized)
+        return;
+    initialized = true;
+    twr_ds2484_init(&ds2482, TWR_I2C_I2C0);
+    twr_onewire_ds2484_init(&ow, &ds2482);
+    // enumerate all slaves on 1-wire bus
+#ifdef DEBUG_ONEWIRE
+    twr_log_debug("ow_init(): 1-wire bus scan started");
+#endif
+    ow_slave_count = twr_onewire_search_all(&ow, ow_slave_list, sizeof(ow_slave_list));
+    for (uint8_t i = 0; i < ow_slave_count; i++)
+    {
+        ow_runtime[i].enabled = true;
+        ow_runtime[i].temperature = NAN;
+    }
+#ifdef DEBUG_ONEWIRE
+    twr_log_debug("ow_init(): 1-wire bus scan found %i devices", ow_slave_count);
+    for (uint8_t i = 0; i < ow_slave_count; i++)
+    {
+        twr_log_debug("ow_init(): 1-wire bus scan found device %i: %016llx", i, ow_slave_list[i]);
+    }
+#endif
+    // start periodic task to read temperatures from 1-wire devices
+    twr_scheduler_register(ow_read_temperatures_task, NULL, twr_tick_get() + 1000);
+}
+
+
+// ==== ADC thermometers ====
+// event handler for ADC thermometer
+void adc_event_handler(twr_adc_channel_t channel, twr_adc_event_t event, void *event_param)
+{
+    if (event == TWR_ADC_EVENT_DONE)
+    {
+        uint16_t value;
+        float temperature = 0;
+        if (twr_adc_async_get_value(channel, &value))
+        {
+            // convert ADC value to temperature
+            if (adc_calibration[channel].calibrated)
+                temperature = (float)value * adc_calibration[channel].gain + adc_calibration[channel].offset;
+            else
+                temperature = NAN;
+            // temporary for debugging
+            // twr_adc_async_get_voltage(channel, &temperature);
+            adc_runtime[channel].raw = value;
+            adc_runtime[channel].temperature = temperature;
+#ifdef DEBUG_ADC
+            twr_log_debug("adc_event_handler(): ADC channel %i, value=%d, temperature: %.2f °C", channel, value, temperature);
+#endif
+        }
+        // start next conversion
+        for (uint8_t i = channel+1; i < ADC_CHANNEL_COUNT; i++)
+        {
+            if (adc_runtime[i].enabled){
+                twr_adc_async_measure(i);
+                break;
+            }
+        }
+    }
+}
+
+// initialize ADC
+void adc_init(void)
+{
+    static bool initialized = false;
+    if (initialized)
+        return;
+    initialized = true;
+    for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
+    {
+        if (adc_calibration[i].present)
+        {
+            adc_runtime[i].enabled = true;
+            adc_runtime[i].temperature = NAN;
+        }
+    }
+    twr_adc_init();
+    for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
+    {
+        if (adc_calibration[i].present)
+        {
+            twr_adc_set_event_handler(i, adc_event_handler, NULL);
+            twr_adc_oversampling_set(i, TWR_ADC_OVERSAMPLING_256);
+            twr_adc_resolution_set(i, TWR_ADC_RESOLUTION_12_BIT);
+        }
+    }
+}
+
+// ADC thermometers calibration
+/*
+We will have ring buffer of ADC values for each ADC channel and 1-wire thermometers.
+Once we detect stable values in ring buffer, we will compute average value from 1-wire thermometers and use it as calibration value.
+Then we will repeat this process, but wait for at least ADC_CALIBRATION_TEMP_DELTA degrees temperature change.
+Calibration points will be stored in adc_calibration_measure_point[] array.
+When we have all calibration points, we will compute ADC calibration data (offset and gain) and store it in adc_calibration[] array.
+*/
+#define ADC_CALIBRATION_RING_LEN 8
+#define ADC_CALIBRATION_TEMP_DELTA 6.0
+#define ADC_CALIBRATION_TEMP_STABLE 1.0
+// #define ADC_CALIBRATION_STEP_INTERVAL 5000
+#define ADC_CALIBRATION_STEP_INTERVAL 1000
+#define ADC_CALIBRATION_POINTS 2
+// TODO adjust sane values from real measurements
+#define ADC_SANE_LOW 6000
+#define ADC_SANE_HIGH 58000
+
+typedef struct 
+{
+    float avg_temperature;  // average temperature from 1-wire thermometers
+    uint16_t adc_value[ADC_CHANNEL_COUNT]; // ADC values for each ADC channel
+} adc_calibration_measure_t;
+
+adc_calibration_measure_t adc_calibration_measure_ring[ADC_CALIBRATION_RING_LEN];
+uint8_t adc_calibration_measure_ring_pos = 0;
+adc_calibration_measure_t adc_calibration_measure_point[ADC_CALIBRATION_POINTS];
+uint8_t adc_calibration_measure_point_pos = 0;
+float adc_last_calibration_temperature = -999.0; 
+
+void adc_compute_calibration(void)
+{
+    for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
+    {
+#ifdef DEBUG_ADC_CALIBRATION
+        twr_log_debug("adc_compute_calibration(): ADC channel %i, Point 0: Temperature=%.2f, ADC Value=%u, Point 1: Temperature=%.2f, ADC Value=%u", i, 
+                      adc_calibration_measure_point[0].avg_temperature, adc_calibration_measure_point[0].adc_value[i],
+                      adc_calibration_measure_point[1].avg_temperature, adc_calibration_measure_point[1].adc_value[i]);
+#endif
+        // check for sane values and set .present flag
+        if (adc_calibration_measure_point[0].adc_value[i] < ADC_SANE_LOW || adc_calibration_measure_point[0].adc_value[i] > ADC_SANE_HIGH ||
+            adc_calibration_measure_point[1].adc_value[i] < ADC_SANE_LOW || adc_calibration_measure_point[1].adc_value[i] > ADC_SANE_HIGH)
+        {
+            adc_calibration[i].present = false;
+            adc_calibration[i].calibrated = false;
+            adc_runtime[i].enabled = false;
+            continue;
+        }
+
+        // compute gain
+        adc_calibration[i].gain = (adc_calibration_measure_point[1].avg_temperature - adc_calibration_measure_point[0].avg_temperature)
+                                    / (float)(adc_calibration_measure_point[1].adc_value[i] - adc_calibration_measure_point[0].adc_value[i]);
+        // compute offset
+        adc_calibration[i].offset = adc_calibration_measure_point[0].avg_temperature - (float)adc_calibration_measure_point[0].adc_value[i] * adc_calibration[i].gain;
+        adc_calibration[i].present = true;
+        adc_calibration[i].calibrated = true;
+        adc_runtime[i].enabled = true;
+#ifdef DEBUG_ADC_CALIBRATION
+        twr_log_debug("adc_compute_calibration(): ADC channel %i, gain=%.5f, offset=%.2f", i, adc_calibration[i].gain, adc_calibration[i].offset);
+#endif
+    }
+}
+
+// callback to periodically read temperatures from 1-wire devices and ADC channels
+void adc_calibration_callback(void * param) {
+    static bool buffer_full = false;
+    float avg_temperature = 0.0;
+    uint8_t avg_temperature_count = 0;
+    for (uint8_t i = 0; i < ow_slave_count; i++)
+    {
+        if (ow_runtime[i].enabled && !isnan(ow_runtime[i].temperature))
+        {
+            avg_temperature += ow_runtime[i].temperature;
+            avg_temperature_count++;
+        }
+    }
+    if (avg_temperature_count > 0)
+        avg_temperature /= (float)avg_temperature_count;
+    else
+        avg_temperature = NAN;
+    adc_calibration_measure_ring[adc_calibration_measure_ring_pos].avg_temperature = avg_temperature;
+    for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
+    {
+        adc_calibration_measure_ring[adc_calibration_measure_ring_pos].adc_value[i] = adc_runtime[i].raw;
+    }
+    if (++adc_calibration_measure_ring_pos >= ADC_CALIBRATION_RING_LEN)
+        buffer_full = true;
+    adc_calibration_measure_ring_pos %= ADC_CALIBRATION_RING_LEN;
+    // check if we have stable values in ring buffer
+    bool stable = buffer_full;
+    float tmin = 999.0;
+    float tmax = -999.0;
+    for (uint8_t i = 0; i < ADC_CALIBRATION_RING_LEN; i++)
+    {
+        if (isnan(adc_calibration_measure_ring[i].avg_temperature))
+        {
+            stable = false;
+            break;
+        }
+        if (adc_calibration_measure_ring[i].avg_temperature < tmin)
+            tmin = adc_calibration_measure_ring[i].avg_temperature;
+        if (adc_calibration_measure_ring[i].avg_temperature > tmax)
+            tmax = adc_calibration_measure_ring[i].avg_temperature;
+    }
+    stable &= (tmax - tmin) < ADC_CALIBRATION_TEMP_STABLE;
+#ifdef DEBUG_ADC_CALIBRATION
+    twr_log_debug("adc_calibration_callback(): stable=%i, tmin=%.2f, tmax=%.2f", stable, tmin, tmax);
+#endif
+    if (stable)
+    {
+        // check if temperature changed enough since last calibration point
+        if (isnan(adc_last_calibration_temperature) || fabs(adc_last_calibration_temperature - adc_calibration_measure_ring[adc_calibration_measure_ring_pos].avg_temperature) > ADC_CALIBRATION_TEMP_DELTA)
+        {
+            // compute average values from ring buffer
+            adc_calibration_measure_t avg;
+            memset(&avg, 0, sizeof(avg));
+            for (uint8_t i = 0; i < ADC_CALIBRATION_RING_LEN; i++)
+            {
+                avg.avg_temperature += adc_calibration_measure_ring[i].avg_temperature;
+                for (uint8_t j = 0; j < ADC_CHANNEL_COUNT; j++)
+                {
+// #ifdef DEBUG_ADC_CALIBRATION
+//                     twr_log_debug("adc_calibration_callback(): ADC calibration point %i, ADC %i: Temperature=%.2f, ADC Value=%u", i, j, adc_calibration_measure_ring[i].avg_temperature, adc_calibration_measure_ring[i].adc_value[j]);
+// #endif                    
+                    avg.adc_value[j] += adc_calibration_measure_ring[i].adc_value[j] / ADC_CALIBRATION_RING_LEN;
+                }
+            }
+            avg.avg_temperature /= (float)ADC_CALIBRATION_RING_LEN;
+#ifdef DEBUG_ADC_CALIBRATION
+            for (uint8_t j = 0; j < ADC_CHANNEL_COUNT; j++)
+            {
+                twr_log_debug("adc_calibration_callback(): ADC calibration point %i: Temperature=%.2f, ADC Value=%u", adc_calibration_measure_point_pos, avg.avg_temperature, avg.adc_value[j]);
+            }
+#endif                
+            // store calibration point
+            adc_calibration_measure_point[adc_calibration_measure_point_pos] = avg;
+            adc_last_calibration_temperature = avg.avg_temperature;
+            if (++adc_calibration_measure_point_pos >= ADC_CALIBRATION_POINTS)
+            {
+                adc_compute_calibration();
+            } else {
+                // start next calibration step
+                twr_scheduler_plan_current_relative(ADC_CALIBRATION_STEP_INTERVAL);
+            }
+            return;
+        }
+        // compute average values from ring buffer
+        float avg_adc_value[ADC_CHANNEL_COUNT] = {0.0};
+        for (uint8_t i = 0; i < ADC_CALIBRATION_RING_LEN; i++)
+        {
+            for (uint8_t j = 0; j < ADC_CHANNEL_COUNT; j++)
+            {
+                avg_adc_value[j] += (float)adc_calibration_measure_ring[i].adc_value[j];
+            }
+        }
+    }
+    twr_scheduler_plan_current_relative(ADC_CALIBRATION_STEP_INTERVAL);
+}
+
+// start ADC calibration
+void adc_calibration_start(void)
+{
+    adc_calibration_measure_point_pos = 0;
+    adc_calibration_measure_ring_pos = 0;
+    adc_last_calibration_temperature = -999.0;
+    memset(adc_calibration_measure_point, 0, sizeof(adc_calibration_measure_point));
+    memset(adc_calibration_measure_ring, 0, sizeof(adc_calibration_measure_ring));
+    twr_scheduler_register(adc_calibration_callback, NULL, twr_tick_get() + ADC_CALIBRATION_STEP_INTERVAL);
+}
 
 
 #define FAN_SPEED_STEP 0.6
@@ -628,19 +1045,27 @@ void application_init(void)
         _pwm_init(fan_config[f].pwm_port, FAN_PWM_MAX);
         fan_set_speed(f, FAN_SPEED_INIT);
         twr_pwm_enable(fan_config[f].pwm_port);
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("APP: PWM init, FAN=%i, port=%i", f, fan_config[f].pwm_port);
 #endif
         twr_gpio_init(fan_config[f].gpio_port);
         twr_gpio_set_mode(fan_config[f].gpio_port, TWR_GPIO_MODE_INPUT);
         twr_gpio_set_pull(fan_config[f].gpio_port, TWR_GPIO_PULL_UP);
-#ifdef DEBUG            
+#ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("APP: RPM reading init, FAN=%i, port=%i", f, fan_config[f].gpio_port);
 #endif
         // temporary to test calibration
         fan_calibration_start(f);
     }
     twr_system_pll_enable();
+
+    // Initialize 1-wire bus
+    ow_init();
+    ow_start_conversion();
+
+    // Initialize ADC
+    adc_init();
+    adc_calibration_start();
 
     // Initialize radio
     twr_radio_init(TWR_RADIO_MODE_NODE_SLEEPING);
@@ -651,12 +1076,55 @@ void application_init(void)
 // Application task function (optional) which is called peridically if scheduled
 void application_task(void)
 {
-    // static int counter = 0;
+    static int counter = 0;
+    counter++;
 
     // Log task run and increment counter
     // twr_log_debug("APP: Task run (count: %d)", ++counter);
     twr_log_debug("APP: RPM: %d", get_rpm(0));
+    float tmin = NAN;
+    float tmax = NAN;
+    float tavg = 0.0;
+    for (uint8_t t = 0; t < ow_slave_count; t++)
+    {
+        if (ow_runtime[t].enabled) {
+            if (isnan(tmin) || ow_runtime[t].temperature < tmin)
+                tmin = ow_runtime[t].temperature;
+            if (isnan(tmax) || ow_runtime[t].temperature > tmax)
+                tmax = ow_runtime[t].temperature;
+            tavg += ow_runtime[t].temperature;
+        }
+    }
+    tavg /= (float)ow_slave_count;
+    twr_log_debug("APP: 1-wire thermometers: %i devices, min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", ow_slave_count, tmin, tmax, tavg, tmax-tmin);
+    uint8_t adc_count = 0;
+    tmin = NAN;
+    tmax = NAN;
+    tavg = 0.0;
+    for (uint8_t t = 0; t < ADC_CHANNEL_COUNT; t++)
+    {
+        if (adc_runtime[t].enabled) {
+            twr_log_debug("APP: ADC thermometer %i: %.2f (raw=%i)", t, adc_runtime[t].temperature, adc_runtime[t].raw);
+            if (isnan(tmin) || adc_runtime[t].temperature < tmin)
+                tmin = adc_runtime[t].temperature;
+            if (isnan(tmax) || adc_runtime[t].temperature > tmax)
+                tmax = adc_runtime[t].temperature;
+            tavg += adc_runtime[t].temperature;
+            adc_count++;
+        }
+    }
+    if (adc_count > 0) {
+        tavg /= (float)adc_count;
+        twr_log_debug("APP: ADC thermometers: %i devices, min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", adc_count, tmin, tmax, tavg, tmax-tmin);
+    }
+    // for (uint8_t t = 0; t < ADC_CHANNEL_COUNT; t++)
+    // {
+    //     if (adc_runtime[t].enabled) {
+    //         twr_log_debug("APP: ADC thermometer %i: %.2f", t, adc_runtime[t].temperature);
+    //     }
+    // }
+    twr_adc_async_measure(TWR_ADC_CHANNEL_A0);
 
     // Plan next run of this task in 1000 ms
-    twr_scheduler_plan_current_from_now(60000);
+    twr_scheduler_plan_current_from_now(10000);
 }
