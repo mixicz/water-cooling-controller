@@ -28,7 +28,6 @@ eeprom_t eeprom = {
     .signature = EEPROM_SIGNATURE,
     .config = {
         .version = EEPROM_VERSION,
-        .fans = 5,
         .fan_ramp_up_step_time = 6000 / FAN_PWM_MAX,        // 6 seconds to ramp up from 0 to 100% speed
         .fan_ramp_down_step_time = 30000 / FAN_PWM_MAX,     // 30 seconds to ramp up from 100% to 0% speed
         .pump_ramp_up_step_time = 4000 / FAN_PWM_MAX,       // 4 seconds to ramp up from 0 to 100% speed
@@ -44,11 +43,11 @@ eeprom_t eeprom = {
         { .gpio_port = TWR_GPIO_P15, .pwm_port = TWR_PWM_P14},
     },
     .fan_user_config = {
-        { .min_speed = 0.2, .max_speed = 1.0, .is_pump = false},
-        { .min_speed = 0.2, .max_speed = 1.0, .is_pump = false},
-        { .min_speed = 0.2, .max_speed = 1.0, .is_pump = false},
-        { .min_speed = 0.2, .max_speed = 1.0, .is_pump = false},
-        { .min_speed = 0.2, .max_speed = 1.0, .is_pump = true},     // last FAN port is preconfigured as water pump
+        { .min_speed = 0.2, .max_speed = 1.0, .default_speed = FAN_SPEED_INIT, .is_pump = false},
+        { .min_speed = 0.2, .max_speed = 1.0, .default_speed = FAN_SPEED_INIT, .is_pump = false},
+        { .min_speed = 0.2, .max_speed = 1.0, .default_speed = FAN_SPEED_INIT, .is_pump = false},
+        { .min_speed = 0.2, .max_speed = 1.0, .default_speed = FAN_SPEED_INIT, .is_pump = false},
+        { .min_speed = 0.2, .max_speed = 1.0, .default_speed = FAN_SPEED_INIT, .is_pump = true},     // last FAN port is preconfigured as water pump
     },
     .fan_calibration = {
         { .present = true, .calibrated = false, .min_pwm = FAN_PWM_MIN, .pwm_capable = true, .points = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -57,21 +56,13 @@ eeprom_t eeprom = {
         { .present = true, .calibrated = false, .min_pwm = FAN_PWM_MIN, .pwm_capable = true, .points = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
         { .present = true, .calibrated = false, .min_pwm = FAN_PWM_MIN, .pwm_capable = true, .points = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
     },
-    .adc_config = {
-        { .adc_port = TWR_ADC_CHANNEL_A0},
-        { .adc_port = TWR_ADC_CHANNEL_A1},
-        { .adc_port = TWR_ADC_CHANNEL_A2},
-        { .adc_port = TWR_ADC_CHANNEL_A3},
-        { .adc_port = TWR_ADC_CHANNEL_A4},
-        { .adc_port = TWR_ADC_CHANNEL_A5},
-    },
     .adc_calibration = {
-        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
-        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
-        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
-        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
-        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
-        { .present = true, .calibrated = false, .offset = 0, .gain = 0},
+        { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
+        { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
+        { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
+        { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
+        { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
+        { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
     },
 };
 
@@ -79,7 +70,6 @@ config_t *config = &eeprom.config;
 fan_config_t *fan_config = eeprom.fan_config;
 fan_calibration_t *fan_calibration = eeprom.fan_calibration;
 fan_user_config_t *fan_user_config = eeprom.fan_user_config;
-adc_config_t *adc_config = eeprom.adc_config;
 adc_calibration_t *adc_calibration = eeprom.adc_calibration;
 
 // 1-wire thermometer runtime data
@@ -519,6 +509,10 @@ void pca9685_init(void) {
 
 #define FAN_SPEED_STEP 0.6
 // Button event callback
+// TODO - long press - start NTC calibration
+// TODO - short press during NTC calibration - stop NTC calibration and start FAN calibration
+// TODO - long press during NTC calibration - stop NTC calibration
+// TODO - long press during FAN calibration - stop FAN calibration
 void button_event_handler(twr_button_t *self, twr_button_event_t event, void *event_param)
 {
     static float fan_speed = 0.6;
@@ -587,7 +581,7 @@ void application_init(void)
     twr_tmp112_set_update_interval(&tmp112, 10000);
 
     // setup PWM for all configured FAN GPIO ports
-    for (uint8_t f = 0; f < config->fans; f++)
+    for (uint8_t f = 0; f < MAX_FANS; f++)
     {
         // fan_list[f] = f;
         _pwm_init(fan_config[f].pwm_port, FAN_PWM_MAX);

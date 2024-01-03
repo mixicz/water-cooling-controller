@@ -36,6 +36,7 @@ typedef struct {
 typedef struct {
     float min_speed;    // user defined minimum speed (0.0 - 1.0), will be reset during calibration
     float max_speed;    // user defined maximum speed (0.0 - 1.0), will be reset during calibration
+    float default_speed;    // user defined default speed (0.0 - 1.0)
     bool is_pump;       // flag indicating that this FAN is actually a water pump - will have enforced minimum speed after calibration
 } fan_user_config_t;
 
