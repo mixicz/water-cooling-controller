@@ -54,6 +54,8 @@ typedef struct {
 } fan_runtime_t;
 
 extern fan_runtime_t fan_runtime[MAX_FANS];
+extern const fan_config_t fan_config[MAX_FANS];
+
 
 void fan_HAL_SYSTICK_Callback(void);
 uint16_t get_rpm(uint8_t fan);

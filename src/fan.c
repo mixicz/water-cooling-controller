@@ -1,6 +1,14 @@
 #include <application.h>
 #include <fan.h>
 
+const fan_config_t fan_config[MAX_FANS] = {
+    { .gpio_port = TWR_GPIO_P9, .pwm_port = TWR_PWM_P6},
+    { .gpio_port = TWR_GPIO_P10, .pwm_port = TWR_PWM_P7},
+    { .gpio_port = TWR_GPIO_P11, .pwm_port = TWR_PWM_P8},
+    { .gpio_port = TWR_GPIO_P13, .pwm_port = TWR_PWM_P12},
+    { .gpio_port = TWR_GPIO_P15, .pwm_port = TWR_PWM_P14},
+};
+
 fan_runtime_t fan_runtime[MAX_FANS] = {
     { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},
     { .enabled = true, .calibrated = false, .pwm_control = true, .calibration_in_progress = false, .pwm_target = 0, .rpm = 0},

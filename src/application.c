@@ -17,13 +17,16 @@ TODO list:
 - MQTT - reporting alarms (unusually high temperature, FAN failure, start/stop calibration, ...)
 - MQTT - commands to set profile, start calibration, ...
 - MQTT - set config values
+- LED control:
+    - on - NTC calibration in progress, waiting for temperature stabilization
+    - brief flashes - NTC calibration in progress, waiting for temperature change
+    - blinking - fan calibration in progress
+    - off - normal operation
 */
 
 #include <application.h>
 
-// 1-wire configuration
-# define OW_MAX_SLAVES 8
-
+// ==== EEPROM ====
 eeprom_t eeprom = {
     .signature = EEPROM_SIGNATURE,
     .config = {
@@ -32,15 +35,6 @@ eeprom_t eeprom = {
         .fan_ramp_down_step_time = 30000 / FAN_PWM_MAX,     // 30 seconds to ramp up from 100% to 0% speed
         .pump_ramp_up_step_time = 4000 / FAN_PWM_MAX,       // 4 seconds to ramp up from 0 to 100% speed
         .pump_ramp_down_step_time = 30000 / FAN_PWM_MAX,    // 30 seconds to ramp up from 100% to 0% speed
-    },
-    .fan_config = {
-        { .gpio_port = TWR_GPIO_P9, .pwm_port = TWR_PWM_P6},
-        // { .gpio_port = TWR_GPIO_P10, .pwm_port = TWR_PWM_P7},
-        { .gpio_port = TWR_GPIO_P17, .pwm_port = TWR_PWM_P7},
-        // { .gpio_port = TWR_GPIO_P11, .pwm_port = TWR_PWM_P8},
-        { .gpio_port = TWR_GPIO_P16, .pwm_port = TWR_PWM_P8},
-        { .gpio_port = TWR_GPIO_P13, .pwm_port = TWR_PWM_P12},
-        { .gpio_port = TWR_GPIO_P15, .pwm_port = TWR_PWM_P14},
     },
     .fan_user_config = {
         { .min_speed = 0.2, .max_speed = 1.0, .default_speed = FAN_SPEED_INIT, .is_pump = false},
@@ -64,50 +58,84 @@ eeprom_t eeprom = {
         { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
         { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
     },
+    .sensor_onewire_map = {},
+    .sensor_const = {
+        { .temperature = 0.0},
+    },
+    .thermal_zone = {
+        { .name = "zero", .sensors = {0xF0, 0xF0}, .absolute = true},           // 0: virtual zone with constant value 0.0 °C
+        { .name = "temp_controller", .sensors = {0, 0xF0}, .absolute = false},  // 1
+        { .name = "temp_outside", .sensors = {0x10, 0xF0}, .absolute = false},  // 2
+        { .name = "temp_inside", .sensors = {0x11, 0xF0}, .absolute = false},   // 3
+        { .name = "delta_gpu", .sensors = {0x20, 0x21}, .absolute = true},      // 4
+        { .name = "delta_cpu", .sensors = {0x22, 0x23}, .absolute = true},      // 5
+        { .name = "delta_case", .sensors = {0x10, 0x11}, .absolute = true},     // 6: delta between inside and outside temperature
+        { .name = "delta_water", .sensors = {0x23, 0x10}, .absolute = true},    // 7: delta between water at end of loop and outside ambient temperature
+    },
+    .fan_group = {
+        { .name = "pump", .fans = 0x10},        // 0
+        { .name = "rad_all", .fans = 0x0F},     // 1
+        { .name = "rad_front", .fans = 0x03},   // 2
+        { .name = "rad_top", .fans = 0x04},     // 3
+        { .name = "rad_back", .fans = 0x08},    // 4
+    },
+    .map_rule = {
+        { .name = "idle_pump", .thermal_zone = 0, .fan_group = 0, .temperature = {-0.1, 0.1}, .speed = {0.2, 0.2}}, // default rule to keep pump running at minimum speed at idle
+        { .name = "idle_rad", .thermal_zone = 0, .fan_group = 1, .temperature = {-0.1, 0.1}, .speed = {0.0, 0.0}}, // default rule to keep radiator fans off at idle
+        { .name = "gpu_pump", .thermal_zone = 4, .fan_group = 0, .temperature = {0.2, 3.0}, .speed = {0.2, 1.0}},
+        { .name = "cpu_pump", .thermal_zone = 5, .fan_group = 0, .temperature = {0.2, 3.0}, .speed = {0.2, 1.0}},
+        { .name = "case_ambient", .thermal_zone = 6, .fan_group = 1, .temperature = {10.0, 20.0}, .speed = {0.2, 0.8}},
+        { .name = "water_loop", .thermal_zone = 7, .fan_group = 1, .temperature = {5.0, 25.0}, .speed = {0.0, 1.0}},
+    },
 };
 
 config_t *config = &eeprom.config;
-fan_config_t *fan_config = eeprom.fan_config;
 fan_calibration_t *fan_calibration = eeprom.fan_calibration;
 fan_user_config_t *fan_user_config = eeprom.fan_user_config;
 adc_calibration_t *adc_calibration = eeprom.adc_calibration;
+sensor_onewire_t *sensor_onewire_map = eeprom.sensor_onewire_map;
+sensor_const_t *sensor_const = eeprom.sensor_const;
+thermal_zone_t *thermal_zone = eeprom.thermal_zone;
+fan_group_t *fan_group = eeprom.fan_group;
+map_rule_t *map_rule = eeprom.map_rule;
 
 // 1-wire thermometer runtime data
+// typedef struct {
+//     bool enabled;
+//     float temperature;
+// } ow_runtime_t;
+
 typedef struct {
+    uint8_t idx_runtime;
+    uint8_t idx_list;
     bool enabled;
-    float temperature;
-} ow_runtime_t;
+} ow_index_t;
 
 uint64_t ow_slave_list[OW_MAX_SLAVES];
 uint8_t ow_slave_count = 0;
 twr_ds2484_t ds2482;
 twr_onewire_t ow;
-ow_runtime_t ow_runtime[OW_MAX_SLAVES] = {
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-};
+ow_index_t ow_index[SENSOR_MAX_COUNT] = {};
+// ow_runtime_t ow_runtime[OW_MAX_SLAVES] = {
+//     { .enabled = false, .temperature = NAN},
+//     { .enabled = false, .temperature = NAN},
+//     { .enabled = false, .temperature = NAN},
+//     { .enabled = false, .temperature = NAN},
+//     { .enabled = false, .temperature = NAN},
+//     { .enabled = false, .temperature = NAN},
+//     { .enabled = false, .temperature = NAN},
+//     { .enabled = false, .temperature = NAN},
+// };
 
 // ADC runtime data
 typedef struct {
     bool enabled;
-    float temperature;
     uint16_t raw;
 } adc_runtime_t;
 
-adc_runtime_t adc_runtime[ADC_CHANNEL_COUNT] = {
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-    { .enabled = false, .temperature = NAN},
-};
+adc_runtime_t adc_runtime[ADC_CHANNEL_COUNT] = {};
+
+sensor_runtime_t sensor_runtime = {};
 
 // LED instance
 twr_led_t led;
@@ -119,13 +147,88 @@ twr_button_t button;
 twr_tmp112_t tmp112;
 uint16_t button_click_count = 0;
 
+// ==== control logic ====
+// read temperature from sensor with given ID
+float read_temperature(uint8_t id)
+{
+    uint8_t bus = id & 0xF0;
+    uint8_t idx = id & 0x0F;
+    switch (bus)
+    {
+        case SENSOR_BUS_I2C:
+            return sensor_runtime.temp_i2c[idx];
+        case SENSOR_BUS_ONEWIRE:
+            return sensor_runtime.temp_onewire[idx];
+        case SENSOR_BUS_ADC:
+            return sensor_runtime.temp_adc[idx];
+        case SENSOR_BUS_CONST:
+            return sensor_const[idx].temperature;
+        default:
+            return NAN;
+    }
+    return NAN;
+}
+
+// compute temperature for thermal zone
+float compute_thermal_zone_temperature(uint8_t zone)
+{
+    float temperature = NAN;
+    float t1 = read_temperature(thermal_zone[zone].sensors[0]);
+    float t2 = read_temperature(thermal_zone[zone].sensors[1]);
+    if (!isnan(t1) && !isnan(t2)) {
+        temperature = t1 - t2;
+        if (thermal_zone[zone].absolute && temperature < 0)
+            temperature = -temperature;
+    }
+#ifdef DEBUG_CONTROL
+    twr_log_debug("compute_thermal_zone_temperature(): zone %i, t1=%.2f, t2=%.2f, temperature=%.2f", zone, t1, t2, temperature);
+#endif    
+    return temperature;
+}
+
+// process all map rules
+void process_map_rules(void)
+{
+    float target_rpm[MAX_FANS];
+    for (uint8_t i = 0; i < MAX_FANS; i++)
+        target_rpm[i] = -1.0;
+    for (uint8_t i = 0; i < MAX_MAP_RULES; i++)
+    {
+        if (map_rule[i].thermal_zone == 0)
+            continue;
+        float temperature = compute_thermal_zone_temperature(map_rule[i].thermal_zone);
+        if (isnan(temperature))
+            continue;
+        if (temperature >= map_rule[i].temperature[0] && temperature <= map_rule[i].temperature[1])
+        {
+            // rule matches, compute target RPM using linear interpolation
+            float speed = (temperature - map_rule[i].temperature[0]) / (map_rule[i].temperature[1] - map_rule[i].temperature[0]);
+            float rpm = map_rule[i].speed[0] + speed * (map_rule[i].speed[1] - map_rule[i].speed[0]);
+            if (rpm > target_rpm[map_rule[i].fan_group])
+                target_rpm[map_rule[i].fan_group] = rpm;
+#ifdef DEBUG_CONTROL
+            twr_log_debug("process_map_rules(): rule %i matches, zone[%i] temperature=%.2f, rule temperature=%.1f-%.1f, rule speed=%.2f=%.2f, rpm=%.2f, target=%.2f", 
+                            i, map_rule[i].thermal_zone, temperature, map_rule[i].temperature[0], map_rule[i].temperature[1], map_rule[i].speed[0], map_rule[i].speed[1], rpm, target_rpm[map_rule[i].fan_group]);
+#endif                
+        }
+    }
+
+    // set target RPM for all fans
+    for (uint8_t i = 0; i < MAX_FANS; i++)
+    {
+        if (target_rpm[i] >= 0.0)
+            fan_set_speed(i, target_rpm[i]);
+        else
+            fan_set_speed(i, fan_user_config[i].default_speed);
+    }
+}
+
 // ==== FAN RPM reading ====
 // this is called every 1 ms by SDK
 void HAL_SYSTICK_Callback(void)
 {
     fan_HAL_SYSTICK_Callback();
 }
-
 
 // ==== 1-wire with DS2482 ====
 // initiate temperature conversion on all 1-wire devices
@@ -164,13 +267,23 @@ float ow_read_temperature(uint64_t * device_id)
     return temperature;
 }
 
+int ow_runtime_idx(uint8_t list_idx) {
+    for (uint8_t i = 0; i < SENSOR_MAX_COUNT; i++)
+    {
+        if (ow_index[i].idx_list == list_idx)
+            return ow_index[i].idx_runtime;
+    }
+    return -1;
+}
+
 // read all temperatures from 1-wire devices
 void ow_read_temperatures()
 {
     for (uint8_t i = 0; i < ow_slave_count; i++)
     {
-        if (ow_runtime[i].enabled)
-            ow_runtime[i].temperature = ow_read_temperature(&ow_slave_list[i]);
+        int idx = ow_runtime_idx(i);
+        if (idx >= 0)
+            sensor_runtime.temp_onewire[idx] = ow_read_temperature(&ow_slave_list[i]);
     }
 }
 
@@ -184,13 +297,14 @@ void ow_read_temperatures_task(void * param)
 
 void ow_init(void)
 {
+    // initialize 1-wire bus on first call only, further calls will just rescann the bus
     static bool initialized = false;
-    if (initialized)
-        return;
+    if (!initialized) {
+        twr_ds2484_init(&ds2482, TWR_I2C_I2C0);
+        twr_ds2484_enable(&ds2482);
+        twr_onewire_ds2484_init(&ow, &ds2482);
+    }
     initialized = true;
-    twr_ds2484_init(&ds2482, TWR_I2C_I2C0);
-    twr_ds2484_enable(&ds2482);
-    twr_onewire_ds2484_init(&ow, &ds2482);
     // enumerate all slaves on 1-wire bus
 #ifdef DEBUG_ONEWIRE
     twr_log_debug("ow_init(): 1-wire bus device scan started");
@@ -198,16 +312,45 @@ void ow_init(void)
     ow_slave_count = twr_onewire_search_all(&ow, ow_slave_list, sizeof(ow_slave_list));
     for (uint8_t i = 0; i < ow_slave_count; i++)
     {
-        ow_runtime[i].enabled = true;
-        ow_runtime[i].temperature = NAN;
-    }
+        bool found = false;
+        for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j].address); j++)
+        {
+            if (sensor_onewire_map[j].address == ow_slave_list[i])
+            {
+                ow_index[j].idx_runtime = j;
+                ow_index[j].idx_list = i;
+                ow_index[j].enabled = true;
+                sensor_runtime.temp_onewire[j] = NAN;
+                found = true;
 #ifdef DEBUG_ONEWIRE
-    twr_log_debug("ow_init(): 1-wire bus scan found %i devices", ow_slave_count);
-    for (uint8_t i = 0; i < ow_slave_count; i++)
-    {
-        twr_log_debug("ow_init(): 1-wire bus scan found device %i: %016llx", i, ow_slave_list[i]);
-    }
+                twr_log_debug("ow_init(): 1-wire bus scan found known device %i on position %i: %016llx", i, j, ow_slave_list[i]);
 #endif
+                break;
+            }
+        }
+        if (!found)
+        {
+            // create new entry in sensor_onewire_map
+            for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j].address); j++)
+            {
+                if (sensor_onewire_map[j].address == 0)
+                {
+                    sensor_onewire_map[j].address = ow_slave_list[i];
+                    ow_index[j].idx_runtime = j;
+                    ow_index[j].idx_list = i;
+                    ow_index[j].enabled = true;
+                    sensor_runtime.temp_onewire[j] = NAN;
+                    found = true;
+                    twr_log_info("ow_init(): 1-wire bus scan found new device %i, storing it to unused position %i: %016llx", i, j, ow_slave_list[i]);
+                    break;
+                }
+            }
+        }
+        if (!found)
+        {
+            twr_log_error("ow_init(): 1-wire bus scan found new device %i, but there is no free position in sensor_onewire_map", i);
+        }
+    }
     // start periodic task to read temperatures from 1-wire devices
     twr_scheduler_register(ow_read_temperatures_task, NULL, twr_tick_get() + 1000);
 }
@@ -231,7 +374,8 @@ void adc_event_handler(twr_adc_channel_t channel, twr_adc_event_t event, void *e
             // temporary for debugging
             // twr_adc_async_get_voltage(channel, &temperature);
             adc_runtime[channel].raw = value;
-            adc_runtime[channel].temperature = temperature;
+            // adc_runtime[channel].temperature = temperature;
+            sensor_runtime.temp_adc[channel] = temperature;
 #ifdef DEBUG_ADC
             twr_log_debug("adc_event_handler(): ADC channel %i, value=%d, temperature: %.2f °C", channel, value, temperature);
 #endif
@@ -259,7 +403,8 @@ void adc_init(void)
         if (adc_calibration[i].present)
         {
             adc_runtime[i].enabled = true;
-            adc_runtime[i].temperature = NAN;
+            adc_runtime[i].raw = 0;
+            sensor_runtime.temp_adc[i] = NAN;
         }
     }
     twr_adc_init();
@@ -303,6 +448,7 @@ uint8_t adc_calibration_measure_ring_pos = 0;
 adc_calibration_measure_t adc_calibration_measure_point[ADC_CALIBRATION_POINTS];
 uint8_t adc_calibration_measure_point_pos = 0;
 float adc_last_calibration_temperature = -999.0; 
+twr_scheduler_task_id_t adc_calibration_task_id = 0;
 
 void adc_compute_calibration(void)
 {
@@ -344,9 +490,10 @@ void adc_calibration_callback(void * param) {
     uint8_t avg_temperature_count = 0;
     for (uint8_t i = 0; i < ow_slave_count; i++)
     {
-        if (ow_runtime[i].enabled && !isnan(ow_runtime[i].temperature))
+        int idx = ow_runtime_idx(i);
+        if (idx >= 0 && ow_index[idx].enabled && !isnan(sensor_runtime.temp_onewire[idx]))
         {
-            avg_temperature += ow_runtime[i].temperature;
+            avg_temperature += sensor_runtime.temp_onewire[idx];
             avg_temperature_count++;
         }
     }
@@ -414,6 +561,8 @@ void adc_calibration_callback(void * param) {
             if (++adc_calibration_measure_point_pos >= ADC_CALIBRATION_POINTS)
             {
                 adc_compute_calibration();
+                adc_calibration_task_id = 0;
+                twr_scheduler_unregister(adc_calibration_task_id);
             } else {
                 // start next calibration step
                 twr_scheduler_plan_current_relative(ADC_CALIBRATION_STEP_INTERVAL);
@@ -441,7 +590,15 @@ void adc_calibration_start(void)
     adc_last_calibration_temperature = -999.0;
     memset(adc_calibration_measure_point, 0, sizeof(adc_calibration_measure_point));
     memset(adc_calibration_measure_ring, 0, sizeof(adc_calibration_measure_ring));
-    twr_scheduler_register(adc_calibration_callback, NULL, twr_tick_get() + ADC_CALIBRATION_STEP_INTERVAL);
+    adc_calibration_task_id = twr_scheduler_register(adc_calibration_callback, NULL, twr_tick_get() + ADC_CALIBRATION_STEP_INTERVAL);
+}
+
+// stop ADC calibration
+void adc_calibration_stop(void)
+{
+    if (adc_calibration_task_id > 0)
+        twr_scheduler_unregister(adc_calibration_task_id);
+    adc_calibration_task_id = 0;
 }
 
 
@@ -507,41 +664,36 @@ void pca9685_init(void) {
 }
 
 
-#define FAN_SPEED_STEP 0.6
 // Button event callback
-// TODO - long press - start NTC calibration
-// TODO - short press during NTC calibration - stop NTC calibration and start FAN calibration
-// TODO - long press during NTC calibration - stop NTC calibration
-// TODO - long press during FAN calibration - stop FAN calibration
 void button_event_handler(twr_button_t *self, twr_button_event_t event, void *event_param)
 {
-    static float fan_speed = 0.6;
-    static float fan_delta = -FAN_SPEED_STEP;
     // Log button event
     twr_log_info("APP: Button event: %i", event);
 
     // Check event source
-    if (event == TWR_BUTTON_EVENT_CLICK)
-    {
-        // Toggle LED pin state
-        twr_led_set_mode(&led, TWR_LED_MODE_TOGGLE);
-
-         // Publish message on radio
-        button_click_count++;
-        twr_radio_pub_push_button(&button_click_count);
-
-        fan_speed += fan_delta;
-        if (fan_speed > 1.0)
-        {
-            fan_speed = 1.0;
-            fan_delta = -FAN_SPEED_STEP;
+    if (event == TWR_BUTTON_EVENT_HOLD) {
+        // flash LED to indicate long press
+        twr_led_pulse(&led, 100);
+        if (adc_calibration_task_id > 0) {
+            // long press during NTC calibration - stop NTC calibration
+            adc_calibration_stop();
+        } else {
+            // long press - start NTC calibration
+            adc_calibration_start();
         }
-        if (fan_speed < 0.0)
-        {
-            fan_speed = 0.0;
-            fan_delta = FAN_SPEED_STEP;
+    } else if (event == TWR_BUTTON_EVENT_CLICK) {
+        if (adc_calibration_task_id > 0) {
+            // short press during NTC calibration - stop NTC calibration and start FAN calibration
+            adc_calibration_stop();
+            for (uint8_t f = 0; f < MAX_FANS; f++)
+            {
+                if (!fan_runtime[f].calibration_in_progress)
+                    fan_calibration_start(f);
+            }
+        } else {
+            // short press during normal operation - rescan 1-wire bus
+            ow_init();
         }
-        fan_set_speed(0, fan_speed);
     }
 }
 
@@ -554,9 +706,11 @@ void tmp112_event_handler(twr_tmp112_t *self, twr_tmp112_event_t event, void *ev
         twr_tmp112_get_temperature_celsius(self, &celsius);
 
 #ifdef DEBUG            
-        twr_log_debug("APP: temperature: %.2f °C", celsius);
+        twr_log_debug("tmp112_event_handler(): temperature: %.2f °C", celsius);
 #endif
+        sensor_runtime.temp_i2c[0] = celsius;
 
+        // Publish temperature on radio
         twr_radio_pub_temperature(TWR_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_ALTERNATE, &celsius);
     }
 }
@@ -564,8 +718,14 @@ void tmp112_event_handler(twr_tmp112_t *self, twr_tmp112_event_t event, void *ev
 // Application initialization function which is called once after boot
 void application_init(void)
 {
+    // initialize sensor_runtime with NaN values, which can be done as filling the structure with 0xFF bytes, see https://en.wikipedia.org/wiki/IEEE_754-1985#NaN
+    memset(&sensor_runtime, 0xFF, sizeof(sensor_runtime));
+
     // Initialize logging
     twr_log_init(TWR_LOG_LEVEL_DUMP, TWR_LOG_TIMESTAMP_ABS);
+#ifdef DEBUG
+    twr_log_debug("init(): eeprom size: %i", sizeof(eeprom));
+#endif
 
     // Initialize LED
     twr_led_init(&led, TWR_GPIO_LED, false, 0);
@@ -588,17 +748,18 @@ void application_init(void)
         fan_set_speed(f, FAN_SPEED_INIT);
         twr_pwm_enable(fan_config[f].pwm_port);
 #ifdef DEBUG_FAN_CALIBRATION
-        twr_log_debug("APP: PWM init, FAN=%i, port=%i", f, fan_config[f].pwm_port);
+        twr_log_debug("init(): PWM init, FAN=%i, port=%i", f, fan_config[f].pwm_port);
 #endif
         twr_gpio_init(fan_config[f].gpio_port);
         twr_gpio_set_mode(fan_config[f].gpio_port, TWR_GPIO_MODE_INPUT);
         twr_gpio_set_pull(fan_config[f].gpio_port, TWR_GPIO_PULL_UP);
 #ifdef DEBUG_FAN_CALIBRATION
-        twr_log_debug("APP: RPM reading init, FAN=%i, port=%i", f, fan_config[f].gpio_port);
-#endif
+        twr_log_debug("init(): RPM reading init, FAN=%i, port=%i", f, fan_config[f].gpio_port);
         // temporary to test calibration
         fan_calibration_start(f);
+#endif
     }
+    // enable FAN RPM reading via GPIO (PLL is called every 1 ms)
     twr_system_pll_enable();
 
     // Initialize 1-wire bus
@@ -606,14 +767,16 @@ void application_init(void)
     ow_start_conversion();
 
     // Initialize ADC
-    // adc_init();
-    // adc_calibration_start();
+    adc_init();
+#ifdef DEBUG_ADC_CALIBRATION
+    adc_calibration_start();
+#endif
 
     // Initialize PCA9685 PWM controller
     // pca9685_init();
 
-    // Initialize radio
-    twr_radio_init(TWR_RADIO_MODE_NODE_SLEEPING);
+    // Initialize radio - keep listening as we are not on battery
+    twr_radio_init(TWR_RADIO_MODE_NODE_LISTENING);
     // Send radio pairing request
     twr_radio_pairing_request("water-cooler", FW_VERSION);
 }
@@ -630,18 +793,19 @@ void application_task(void)
     float tmin = NAN;
     float tmax = NAN;
     float tavg = 0.0;
-    for (uint8_t t = 0; t < ow_slave_count; t++)
+    uint8_t ow_count = 0;
+    for (uint8_t t = 0; t < SENSOR_MAX_COUNT; t++)
     {
-        if (ow_runtime[t].enabled) {
-            if (isnan(tmin) || ow_runtime[t].temperature < tmin)
-                tmin = ow_runtime[t].temperature;
-            if (isnan(tmax) || ow_runtime[t].temperature > tmax)
-                tmax = ow_runtime[t].temperature;
-            tavg += ow_runtime[t].temperature;
+        if (ow_index[t].enabled) {
+            if (isnan(tmin) || sensor_runtime.temp_onewire[ow_index[t].idx_runtime] < tmin)
+                tmin = sensor_runtime.temp_onewire[ow_index[t].idx_runtime];
+            if (isnan(tmax) || sensor_runtime.temp_onewire[ow_index[t].idx_runtime] > tmax)
+                tmax = sensor_runtime.temp_onewire[ow_index[t].idx_runtime];
+            tavg += sensor_runtime.temp_onewire[ow_index[t].idx_runtime];
         }
     }
     tavg /= (float)ow_slave_count;
-    twr_log_debug("APP: 1-wire thermometers: %i devices, min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", ow_slave_count, tmin, tmax, tavg, tmax-tmin);
+    twr_log_debug("APP: 1-wire thermometers: %i devices (%i active), min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", ow_slave_count, ow_count, tmin, tmax, tavg, tmax-tmin);
     // uint8_t adc_count = 0;
     // tmin = NAN;
     // tmax = NAN;
@@ -668,7 +832,7 @@ void application_task(void)
     //         twr_log_debug("APP: ADC thermometer %i: %.2f", t, adc_runtime[t].temperature);
     //     }
     // }
-    // twr_adc_async_measure(TWR_ADC_CHANNEL_A0);  // TODO - place this to some periodic task, it will measure all ADC channels starting with A0
+    twr_adc_async_measure(TWR_ADC_CHANNEL_A0);  // TODO - place this to some periodic task, it will measure all ADC channels starting with A0
     // pca9685_set_pwm(PCA9685_CHANNEL_ALL, ((counter+2)*256)&0x0FFF);
 // #ifdef DEBUG_PCA9685
 //     uint8_t tmp[4] = {0, 0, 0, 0};
@@ -676,6 +840,9 @@ void application_task(void)
 //     twr_log_debug("APP: PCA9685: regs: %02x %02x %02x %02x", tmp[0], tmp[1], tmp[2], tmp[3]);
 // #endif
 
+    // control logic
+    process_map_rules();
+
     // Plan next run of this task in 1000 ms
-    twr_scheduler_plan_current_from_now(10000);
+    twr_scheduler_plan_current_from_now(1000);
 }

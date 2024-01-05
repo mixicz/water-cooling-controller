@@ -33,7 +33,7 @@ TODO
 - **map rule** – maps range from thermal zone to range in fan group
     - all rules are always processed and maximum resulting RPM is always used,
     - if thermal zone value is out of range, rule is skipped,
-    - linear approximation is used for mapping,
+    - linear interpolation is used for mapping,
 
 Notes:
 - target RPM is defined as percentage (value range 0..100) and is converted to real RPM for individual fans independently. So if there are 2 fans in group with max RPM of 1000 and 2000 respectively and RPM is set to 50%, fans will be set to 500 and 1000 RPM,
