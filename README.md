@@ -30,7 +30,7 @@ TODO
 - **thermal zone** – delta of 2 sensors (absolute value) in °C
 - **fan group** – set of 0..N PWM outputs
     - each fan can be part of multiple groups
-- **map rule** – maps range from thermal zone to range in fan group
+- **map rule** – maps temperature range from thermal zone to speed range in fan group
     - all rules are always processed and maximum resulting RPM is always used,
     - if thermal zone value is out of range, rule is skipped,
     - linear interpolation is used for mapping,
@@ -43,15 +43,24 @@ Notes:
 
 ### Thermal zone definition
 - internal representation as `uint8 tz[2]`
-- string interface representation as `Z:<index>=<ID0>-<ID2>:<name>`, where index is hexadecimal number, e.g.:
+- string interface representation as `Z:<index>=<ID0>-<ID2>#<name>`, where index is hexadecimal number, e.g.:
     - `Z:0=F0-00:controller ambient` - represents ambient temperature around controller defined as difference between onboard sensor and fixed value of 0°C,
     - `Z:1=10-11:inside case delta` - delta between 1-wire sensors `0` and `1`, for example difference between outside ambient temperature and temperature inside PC case,
 
 ### Fan group definition
 - internal representation as `uint8 fg`, where bits 0-4 indicates if given fan is part of the group,
-- string representation as `G:<index>=<binary value>:<name>`, where each bit in 5-bit binary value represent PWM ports, with `1` meaning the PWM output is part of the group and leftmost bit has highest index, e.g.:
-    - `G:10000` - only PWM port 5 (pump) is part of the group,
-    - `G:00011` - PWM ports 1 and 2 are part of the group
+- string representation as `G:<index>=<binary value>#<name>`, where each bit in 5-bit binary value represent PWM ports, with `1` meaning the PWM output is part of the group and leftmost bit has highest index, e.g.:
+    - `G:0=10000` - only PWM port 5 (pump) is part of the group,
+    - `G:2=00011` - PWM ports 1 and 2 are part of the group
+
+### Map rule definition
+- string representation as `R:<index>=Z<zone>(t1,t2)G<group>(s1,s2)#<name>`, where:
+    - *index* - single hex digit (`0`..`F`) as map rule index,
+    - *zone* - single hex digit (`0`..`F`) as thermal zone index,
+    - *group* - single hex digit (`0`..`F`) as fan group index,
+    - *t1*/*t2* - start/end of temperature range as float in °C,
+    - *s1*/*s2* - start/end of relative speed range as float in <0..1> interval,
+    - *name* - string, max 15 chars.
 
 ## Controls
 Upon first start, all connected fans will be detected and calibrated.

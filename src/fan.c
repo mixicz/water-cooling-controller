@@ -3,8 +3,10 @@
 
 const fan_config_t fan_config[MAX_FANS] = {
     { .gpio_port = TWR_GPIO_P9, .pwm_port = TWR_PWM_P6},
-    { .gpio_port = TWR_GPIO_P10, .pwm_port = TWR_PWM_P7},
-    { .gpio_port = TWR_GPIO_P11, .pwm_port = TWR_PWM_P8},
+    // { .gpio_port = TWR_GPIO_P10, .pwm_port = TWR_PWM_P7},
+    { .gpio_port = TWR_GPIO_P17, .pwm_port = TWR_PWM_P7},
+    // { .gpio_port = TWR_GPIO_P11, .pwm_port = TWR_PWM_P8},
+    { .gpio_port = TWR_GPIO_P16, .pwm_port = TWR_PWM_P8},
     { .gpio_port = TWR_GPIO_P13, .pwm_port = TWR_PWM_P12},
     { .gpio_port = TWR_GPIO_P15, .pwm_port = TWR_PWM_P14},
 };
@@ -145,7 +147,7 @@ void fan_ramp_step(void * ptr_fan)
         fan_runtime[fan].pwm_current--;
         direction = -1;
     }
-#ifdef DEBUG_FAN_CALIBRATION
+#ifdef DEBUG_FAN
     twr_log_debug("fan_ramp_step(): FAN=%i, PWM=%i, direction=%i", fan, fan_runtime[fan].pwm_current, direction);
 #endif 
     twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm_current);
@@ -155,7 +157,7 @@ void fan_ramp_step(void * ptr_fan)
 // FAN set speed using calibration data
 void fan_set_speed(uint8_t fan, float speed)
 {
-#ifdef DEBUG_FAN_CALIBRATION            
+#ifdef DEBUG_FAN
     twr_log_debug("fan_set_speed(): FAN=%i, requested: speed=%.2f", fan, speed);
 #endif
     if (fan_runtime[fan].enabled == false || fan_runtime[fan].pwm_control == false || fan_runtime[fan].calibration_in_progress == true)
@@ -186,13 +188,12 @@ void fan_set_speed(uint8_t fan, float speed)
     // cap PWM value to maximum PWM value
     if (fan_runtime[fan].pwm_target > FAN_PWM_MAX)
         fan_runtime[fan].pwm_target = FAN_PWM_MAX;
-#ifdef DEBUG_FAN_CALIBRATION
+#ifdef DEBUG_FAN
     twr_log_debug("fan_set_speed(): FAN=%i, computed: speed=%.2f, PWM=%i -> %i", fan, speed, fan_runtime[fan].pwm_current, fan_runtime[fan].pwm_target);
 #endif
     if (fan_runtime[fan].pwm_current == fan_runtime[fan].pwm_target)
         return;
-    // TODO: stat ramp up/down callback
-    // twr_pwm_set(fan_config[fan].pwm_port, fan_runtime[fan].pwm_target);
+    // start ramp up/down callback
     if (fan_runtime[fan].ramp_in_progress == false) {
         fan_runtime[fan].ramp_in_progress = true;
         twr_scheduler_register(fan_ramp_step, &fan_list[fan], twr_tick_get() + fan_step_time(fan, fan_runtime[fan].pwm_target > fan_runtime[fan].pwm_current));

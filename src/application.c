@@ -147,6 +147,80 @@ twr_button_t button;
 twr_tmp112_t tmp112;
 uint16_t button_click_count = 0;
 
+// ==== MQTT ====
+
+// topic callback headers
+void config_set_sensor_onewire(uint64_t *id, const char *topic, void *value, void *param);
+void config_set_thermal_zone(uint64_t *id, const char *topic, void *value, void *param);
+void config_set_fan_group(uint64_t *id, const char *topic, void *value, void *param);
+void config_set_map_rule(uint64_t *id, const char *topic, void *value, void *param);
+
+/*
+typedef enum
+{
+BC_RADIO_SUB_PT_BOOL = 0,
+BC_RADIO_SUB_PT_INT = 1,
+BC_RADIO_SUB_PT_FLOAT = 2,
+BC_RADIO_SUB_PT_STRING = 3,
+BC_RADIO_SUB_PT_NULL = 4,
+
+} bc_radio_sub_pt_t;
+ */
+
+static char mqtt_bufer[256];
+// subscribe table, format: topic, expect payload type, callback, user param
+static const bc_radio_sub_t mqtt_subs[] = {
+    // state/set
+    //     {"led-pwm/-/config/set", BC_RADIO_SUB_PT_STRING, led_config_set, NULL },
+    {"water-cooler/sensor-onewire/config/set", BC_RADIO_SUB_PT_STRING, config_set_sensor_onewire, mqtt_bufer},
+    {"water-cooler/thermal-zone/config/set", BC_RADIO_SUB_PT_STRING, config_set_thermal_zone, mqtt_bufer},
+    {"water-cooler/fan-group/config/set", BC_RADIO_SUB_PT_STRING, config_set_fan_group, mqtt_bufer},
+    {"water-cooler/map-rule/config/set", BC_RADIO_SUB_PT_STRING, config_set_map_rule, mqtt_bufer},
+};
+
+// MQTT callbacks
+/*
+- string representation as `O:<index>=<address>`, where
+    - *index* - single hex digit (`0`..`F`) as 1-wire sensor index,
+    - *address* - 64-bit hexadecimal number as 1-wire device address
+*/
+void config_set_sensor_onewire(uint64_t *id, const char *topic, void *value, void *param) {
+    // TODO
+}
+
+/*
+- string interface representation as `Z:<index>=<ID0>-<ID2>#<name>`, where index is hexadecimal number, e.g.:
+    - `Z:0=F0-00:controller ambient` - represents ambient temperature around controller defined as difference between onboard sensor and fixed value of 0°C,
+    - `Z:1=10-11:inside case delta` - delta between 1-wire sensors `0` and `1`, for example difference between outside ambient temperature and temperature inside PC case,
+*/
+void config_set_thermal_zone(uint64_t *id, const char *topic, void *value, void *param) {
+    // TODO
+}
+
+/*
+- string representation as `G:<index>=<binary value>#<name>`, where each bit in 5-bit binary value represent PWM ports, with `1` meaning the PWM output is part of the group and leftmost bit has highest index, e.g.:
+    - `G:0=10000` - only PWM port 5 (pump) is part of the group,
+    - `G:2=00011` - PWM ports 1 and 2 are part of the group
+*/
+void config_set_fan_group(uint64_t *id, const char *topic, void *value, void *param) {
+    // TODO
+}
+
+/*
+### Map rule definition
+- string representation as `R:<index>=Z<zone>(t1,t2)G<group>(s1,s2)#<name>`, where:
+    - *index* - single hex digit (`0`..`F`) as map rule index,
+    - *zone* - single hex digit (`0`..`F`) as thermal zone index,
+    - *group* - single hex digit (`0`..`F`) as fan group index,
+    - *t1* / *t2* - start/end of temperature range as float in °C,
+    - *s1* / *s2* - start/end of relative speed range as float in <0..1> interval,
+    - *name* - string, max 15 chars.
+*/
+void config_set_map_rule(uint64_t *id, const char *topic, void *value, void *param) {
+    // TODO
+}
+
+
 // ==== control logic ====
 // read temperature from sensor with given ID
 float read_temperature(uint8_t id)
@@ -313,7 +387,7 @@ void ow_init(void)
     for (uint8_t i = 0; i < ow_slave_count; i++)
     {
         bool found = false;
-        for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j].address); j++)
+        for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j]); j++)
         {
             if (sensor_onewire_map[j].address == ow_slave_list[i])
             {
@@ -331,7 +405,7 @@ void ow_init(void)
         if (!found)
         {
             // create new entry in sensor_onewire_map
-            for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j].address); j++)
+            for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j]); j++)
             {
                 if (sensor_onewire_map[j].address == 0)
                 {
@@ -743,16 +817,16 @@ void application_init(void)
     // setup PWM for all configured FAN GPIO ports
     for (uint8_t f = 0; f < MAX_FANS; f++)
     {
-        // fan_list[f] = f;
-        _pwm_init(fan_config[f].pwm_port, FAN_PWM_MAX);
-        fan_set_speed(f, FAN_SPEED_INIT);
-        twr_pwm_enable(fan_config[f].pwm_port);
 #ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("init(): PWM init, FAN=%i, port=%i", f, fan_config[f].pwm_port);
 #endif
+        // fan_list[f] = f;
+        _pwm_init(fan_config[f].pwm_port, FAN_PWM_MAX);
+        twr_pwm_enable(fan_config[f].pwm_port);
         twr_gpio_init(fan_config[f].gpio_port);
         twr_gpio_set_mode(fan_config[f].gpio_port, TWR_GPIO_MODE_INPUT);
         twr_gpio_set_pull(fan_config[f].gpio_port, TWR_GPIO_PULL_UP);
+        fan_set_speed(f, FAN_SPEED_INIT);
 #ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("init(): RPM reading init, FAN=%i, port=%i", f, fan_config[f].gpio_port);
         // temporary to test calibration

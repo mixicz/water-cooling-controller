@@ -15,11 +15,13 @@
 
 #ifdef DEBUG
 // #define DEBUG_FAN_CALIBRATION   true
+// #define DEBUG_FAN               true
 // #define DEBUG_ONEWIRE           true
 // #define DEBUG_ADC               true
 #define DEBUG_ADC_CALIBRATION   true
 // #define DEBUG_PCA9685           true
-#define DEBUG_CONTROL           true
+// #define DEBUG_CONTROL           true
+#define DEBUG_MQTT              true
 #endif
 
 // control logic
@@ -113,7 +115,6 @@ typedef struct {
 typedef struct {
     uint32_t signature;
     config_t config;
-    // fan_config_t fan_config[MAX_FANS];
     fan_user_config_t fan_user_config[MAX_FANS];
     fan_calibration_t fan_calibration[MAX_FANS];
     adc_calibration_t adc_calibration[ADC_CHANNEL_COUNT];
@@ -126,7 +127,6 @@ typedef struct {
 
 extern eeprom_t eeprom;
 extern config_t *config;
-extern fan_config_t *fan_config;
 extern fan_user_config_t *fan_user_config;
 extern fan_calibration_t *fan_calibration;
 extern adc_calibration_t *adc_calibration;
