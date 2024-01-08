@@ -9,10 +9,10 @@ TODO list:
 - ADC calibration
 - ADC periodic temperature readings
 - status LEDs via Adafruit PCA9685 PWM driver
-- save config and calibration data to EEPROM
-- load config and calibration data from EEPROM
-- automatic FAN calibration
-- performance profiles for FANs
++- save config and calibration data to EEPROM
++- load config and calibration data from EEPROM
++- automatic FAN calibration
+/- performance profiles for FANs
 - MQTT - reporing temperatures, FAN speeds
 - MQTT - reporting alarms (unusually high temperature, FAN failure, start/stop calibration, ...)
 - MQTT - commands to set profile, start calibration, ...
@@ -58,7 +58,9 @@ eeprom_t eeprom = {
         { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
         { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
     },
-    .sensor_onewire_map = {},
+    .sensor_onewire_map = {
+        {0, 0},
+    },
     .sensor_const = {
         { .temperature = 0.0},
     },
@@ -89,15 +91,15 @@ eeprom_t eeprom = {
     },
 };
 
-config_t *config = &eeprom.config;
-fan_calibration_t *fan_calibration = eeprom.fan_calibration;
-fan_user_config_t *fan_user_config = eeprom.fan_user_config;
-adc_calibration_t *adc_calibration = eeprom.adc_calibration;
-sensor_onewire_t *sensor_onewire_map = eeprom.sensor_onewire_map;
-sensor_const_t *sensor_const = eeprom.sensor_const;
-thermal_zone_t *thermal_zone = eeprom.thermal_zone;
-fan_group_t *fan_group = eeprom.fan_group;
-map_rule_t *map_rule = eeprom.map_rule;
+// config_t *config = &eeprom.config;
+// fan_calibration_t *fan_calibration = eeprom.fan_calibration;
+// fan_user_config_t *fan_user_config = eeprom.fan_user_config;
+// adc_calibration_t *adc_calibration = eeprom.adc_calibration;
+// sensor_onewire_t *sensor_onewire_map = eeprom.sensor_onewire_map;
+// sensor_const_t *sensor_const = eeprom.sensor_const;
+// thermal_zone_t *thermal_zone = eeprom.thermal_zone;
+// fan_group_t *fan_group = eeprom.fan_group;
+// map_rule_t *map_rule = eeprom.map_rule;
 
 // 1-wire thermometer runtime data
 // typedef struct {
@@ -105,27 +107,12 @@ map_rule_t *map_rule = eeprom.map_rule;
 //     float temperature;
 // } ow_runtime_t;
 
-typedef struct {
-    uint8_t idx_runtime;
-    uint8_t idx_list;
-    bool enabled;
-} ow_index_t;
-
 uint64_t ow_slave_list[OW_MAX_SLAVES];
 uint8_t ow_slave_count = 0;
 twr_ds2484_t ds2482;
 twr_onewire_t ow;
-ow_index_t ow_index[SENSOR_MAX_COUNT] = {};
-// ow_runtime_t ow_runtime[OW_MAX_SLAVES] = {
-//     { .enabled = false, .temperature = NAN},
-//     { .enabled = false, .temperature = NAN},
-//     { .enabled = false, .temperature = NAN},
-//     { .enabled = false, .temperature = NAN},
-//     { .enabled = false, .temperature = NAN},
-//     { .enabled = false, .temperature = NAN},
-//     { .enabled = false, .temperature = NAN},
-//     { .enabled = false, .temperature = NAN},
-// };
+ow_index_t ow_index[SENSOR_MAX_COUNT];
+bool ow_rescan = false;
 
 // ADC runtime data
 typedef struct {
@@ -133,9 +120,9 @@ typedef struct {
     uint16_t raw;
 } adc_runtime_t;
 
-adc_runtime_t adc_runtime[ADC_CHANNEL_COUNT] = {};
+adc_runtime_t adc_runtime[ADC_CHANNEL_COUNT];
 
-sensor_runtime_t sensor_runtime = {};
+sensor_runtime_t sensor_runtime;
 
 // LED instance
 twr_led_t led;
@@ -146,80 +133,6 @@ twr_button_t button;
 // Thermometer instance
 twr_tmp112_t tmp112;
 uint16_t button_click_count = 0;
-
-// ==== MQTT ====
-
-// topic callback headers
-void config_set_sensor_onewire(uint64_t *id, const char *topic, void *value, void *param);
-void config_set_thermal_zone(uint64_t *id, const char *topic, void *value, void *param);
-void config_set_fan_group(uint64_t *id, const char *topic, void *value, void *param);
-void config_set_map_rule(uint64_t *id, const char *topic, void *value, void *param);
-
-/*
-typedef enum
-{
-BC_RADIO_SUB_PT_BOOL = 0,
-BC_RADIO_SUB_PT_INT = 1,
-BC_RADIO_SUB_PT_FLOAT = 2,
-BC_RADIO_SUB_PT_STRING = 3,
-BC_RADIO_SUB_PT_NULL = 4,
-
-} bc_radio_sub_pt_t;
- */
-
-static char mqtt_bufer[256];
-// subscribe table, format: topic, expect payload type, callback, user param
-static const bc_radio_sub_t mqtt_subs[] = {
-    // state/set
-    //     {"led-pwm/-/config/set", BC_RADIO_SUB_PT_STRING, led_config_set, NULL },
-    {"water-cooler/sensor-onewire/config/set", BC_RADIO_SUB_PT_STRING, config_set_sensor_onewire, mqtt_bufer},
-    {"water-cooler/thermal-zone/config/set", BC_RADIO_SUB_PT_STRING, config_set_thermal_zone, mqtt_bufer},
-    {"water-cooler/fan-group/config/set", BC_RADIO_SUB_PT_STRING, config_set_fan_group, mqtt_bufer},
-    {"water-cooler/map-rule/config/set", BC_RADIO_SUB_PT_STRING, config_set_map_rule, mqtt_bufer},
-};
-
-// MQTT callbacks
-/*
-- string representation as `O:<index>=<address>`, where
-    - *index* - single hex digit (`0`..`F`) as 1-wire sensor index,
-    - *address* - 64-bit hexadecimal number as 1-wire device address
-*/
-void config_set_sensor_onewire(uint64_t *id, const char *topic, void *value, void *param) {
-    // TODO
-}
-
-/*
-- string interface representation as `Z:<index>=<ID0>-<ID2>#<name>`, where index is hexadecimal number, e.g.:
-    - `Z:0=F0-00:controller ambient` - represents ambient temperature around controller defined as difference between onboard sensor and fixed value of 0°C,
-    - `Z:1=10-11:inside case delta` - delta between 1-wire sensors `0` and `1`, for example difference between outside ambient temperature and temperature inside PC case,
-*/
-void config_set_thermal_zone(uint64_t *id, const char *topic, void *value, void *param) {
-    // TODO
-}
-
-/*
-- string representation as `G:<index>=<binary value>#<name>`, where each bit in 5-bit binary value represent PWM ports, with `1` meaning the PWM output is part of the group and leftmost bit has highest index, e.g.:
-    - `G:0=10000` - only PWM port 5 (pump) is part of the group,
-    - `G:2=00011` - PWM ports 1 and 2 are part of the group
-*/
-void config_set_fan_group(uint64_t *id, const char *topic, void *value, void *param) {
-    // TODO
-}
-
-/*
-### Map rule definition
-- string representation as `R:<index>=Z<zone>(t1,t2)G<group>(s1,s2)#<name>`, where:
-    - *index* - single hex digit (`0`..`F`) as map rule index,
-    - *zone* - single hex digit (`0`..`F`) as thermal zone index,
-    - *group* - single hex digit (`0`..`F`) as fan group index,
-    - *t1* / *t2* - start/end of temperature range as float in °C,
-    - *s1* / *s2* - start/end of relative speed range as float in <0..1> interval,
-    - *name* - string, max 15 chars.
-*/
-void config_set_map_rule(uint64_t *id, const char *topic, void *value, void *param) {
-    // TODO
-}
-
 
 // ==== control logic ====
 // read temperature from sensor with given ID
@@ -236,7 +149,7 @@ float read_temperature(uint8_t id)
         case SENSOR_BUS_ADC:
             return sensor_runtime.temp_adc[idx];
         case SENSOR_BUS_CONST:
-            return sensor_const[idx].temperature;
+            return eeprom.sensor_const[idx].temperature;
         default:
             return NAN;
     }
@@ -247,11 +160,11 @@ float read_temperature(uint8_t id)
 float compute_thermal_zone_temperature(uint8_t zone)
 {
     float temperature = NAN;
-    float t1 = read_temperature(thermal_zone[zone].sensors[0]);
-    float t2 = read_temperature(thermal_zone[zone].sensors[1]);
+    float t1 = read_temperature(eeprom.thermal_zone[zone].sensors[0]);
+    float t2 = read_temperature(eeprom.thermal_zone[zone].sensors[1]);
     if (!isnan(t1) && !isnan(t2)) {
         temperature = t1 - t2;
-        if (thermal_zone[zone].absolute && temperature < 0)
+        if (eeprom.thermal_zone[zone].absolute && temperature < 0)
             temperature = -temperature;
     }
 #ifdef DEBUG_CONTROL
@@ -268,18 +181,18 @@ void process_map_rules(void)
         target_rpm[i] = -1.0;
     for (uint8_t i = 0; i < MAX_MAP_RULES; i++)
     {
-        if (map_rule[i].thermal_zone == 0)
+        if (eeprom.map_rule[i].thermal_zone == 0)
             continue;
-        float temperature = compute_thermal_zone_temperature(map_rule[i].thermal_zone);
+        float temperature = compute_thermal_zone_temperature(eeprom.map_rule[i].thermal_zone);
         if (isnan(temperature))
             continue;
-        if (temperature >= map_rule[i].temperature[0] && temperature <= map_rule[i].temperature[1])
+        if (temperature >= eeprom.map_rule[i].temperature[0] && temperature <= eeprom.map_rule[i].temperature[1])
         {
             // rule matches, compute target RPM using linear interpolation
-            float speed = (temperature - map_rule[i].temperature[0]) / (map_rule[i].temperature[1] - map_rule[i].temperature[0]);
-            float rpm = map_rule[i].speed[0] + speed * (map_rule[i].speed[1] - map_rule[i].speed[0]);
-            if (rpm > target_rpm[map_rule[i].fan_group])
-                target_rpm[map_rule[i].fan_group] = rpm;
+            float speed = (temperature - eeprom.map_rule[i].temperature[0]) / (eeprom.map_rule[i].temperature[1] - eeprom.map_rule[i].temperature[0]);
+            float rpm = eeprom.map_rule[i].speed[0] + speed * (eeprom.map_rule[i].speed[1] - eeprom.map_rule[i].speed[0]);
+            if (rpm > target_rpm[eeprom.map_rule[i].fan_group])
+                target_rpm[eeprom.map_rule[i].fan_group] = rpm;
 #ifdef DEBUG_CONTROL
             twr_log_debug("process_map_rules(): rule %i matches, zone[%i] temperature=%.2f, rule temperature=%.1f-%.1f, rule speed=%.2f=%.2f, rpm=%.2f, target=%.2f", 
                             i, map_rule[i].thermal_zone, temperature, map_rule[i].temperature[0], map_rule[i].temperature[1], map_rule[i].speed[0], map_rule[i].speed[1], rpm, target_rpm[map_rule[i].fan_group]);
@@ -293,7 +206,7 @@ void process_map_rules(void)
         if (target_rpm[i] >= 0.0)
             fan_set_speed(i, target_rpm[i]);
         else
-            fan_set_speed(i, fan_user_config[i].default_speed);
+            fan_set_speed(i, eeprom.fan_user_config[i].default_speed);
     }
 }
 
@@ -310,9 +223,7 @@ void ow_start_conversion()
 {
     if (!twr_onewire_reset(&ow))
     {
-#ifdef DEBUG_ONEWIRE
-        twr_log_debug("ow_start_conversion(): 1-wire not responding");
-#endif
+        twr_log_error("ow_start_conversion(): 1-wire not responding");
         return;
     }
     twr_onewire_skip_rom(&ow);
@@ -325,9 +236,7 @@ float ow_read_temperature(uint64_t * device_id)
     int16_t raw;
     if (!twr_onewire_reset(&ow))
     {
-#ifdef DEBUG_ONEWIRE
-        twr_log_debug("ow_read_temperature(%016llx): 1-wire not responding", *device_id);
-#endif
+        twr_log_error("ow_read_temperature(%016llx): 1-wire not responding", *device_id);
         return NAN;
     }
     twr_onewire_select(&ow, device_id);
@@ -342,8 +251,7 @@ float ow_read_temperature(uint64_t * device_id)
 }
 
 int ow_runtime_idx(uint8_t list_idx) {
-    for (uint8_t i = 0; i < SENSOR_MAX_COUNT; i++)
-    {
+    for (uint8_t i = 0; i < SENSOR_MAX_COUNT; i++) {
         if (ow_index[i].idx_list == list_idx)
             return ow_index[i].idx_runtime;
     }
@@ -353,8 +261,7 @@ int ow_runtime_idx(uint8_t list_idx) {
 // read all temperatures from 1-wire devices
 void ow_read_temperatures()
 {
-    for (uint8_t i = 0; i < ow_slave_count; i++)
-    {
+    for (uint8_t i = 0; i < ow_slave_count; i++) {
         int idx = ow_runtime_idx(i);
         if (idx >= 0)
             sensor_runtime.temp_onewire[idx] = ow_read_temperature(&ow_slave_list[i]);
@@ -377,28 +284,27 @@ void ow_init(void)
         twr_ds2484_init(&ds2482, TWR_I2C_I2C0);
         twr_ds2484_enable(&ds2482);
         twr_onewire_ds2484_init(&ow, &ds2482);
+        memset(ow_index, 0, sizeof(ow_index));
     }
-    initialized = true;
     // enumerate all slaves on 1-wire bus
 #ifdef DEBUG_ONEWIRE
     twr_log_debug("ow_init(): 1-wire bus device scan started");
 #endif
+    bool new_device = false;
     ow_slave_count = twr_onewire_search_all(&ow, ow_slave_list, sizeof(ow_slave_list));
     for (uint8_t i = 0; i < ow_slave_count; i++)
     {
         bool found = false;
         for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j]); j++)
         {
-            if (sensor_onewire_map[j].address == ow_slave_list[i])
+            if (eeprom.sensor_onewire_map[j].address == ow_slave_list[i])
             {
                 ow_index[j].idx_runtime = j;
                 ow_index[j].idx_list = i;
                 ow_index[j].enabled = true;
                 sensor_runtime.temp_onewire[j] = NAN;
                 found = true;
-#ifdef DEBUG_ONEWIRE
-                twr_log_debug("ow_init(): 1-wire bus scan found known device %i on position %i: %016llx", i, j, ow_slave_list[i]);
-#endif
+                twr_log_info("ow_init(): 1-wire bus scan found known device %i on position %i: %016llx", i, j, ow_slave_list[i]);
                 break;
             }
         }
@@ -407,14 +313,15 @@ void ow_init(void)
             // create new entry in sensor_onewire_map
             for (uint8_t j = 0; j < sizeof(eeprom.sensor_onewire_map) / sizeof(eeprom.sensor_onewire_map[j]); j++)
             {
-                if (sensor_onewire_map[j].address == 0)
+                if (eeprom.sensor_onewire_map[j].address == 0)
                 {
-                    sensor_onewire_map[j].address = ow_slave_list[i];
+                    eeprom.sensor_onewire_map[j].address = ow_slave_list[i];
                     ow_index[j].idx_runtime = j;
                     ow_index[j].idx_list = i;
                     ow_index[j].enabled = true;
                     sensor_runtime.temp_onewire[j] = NAN;
                     found = true;
+                    new_device = true;
                     twr_log_info("ow_init(): 1-wire bus scan found new device %i, storing it to unused position %i: %016llx", i, j, ow_slave_list[i]);
                     break;
                 }
@@ -425,8 +332,19 @@ void ow_init(void)
             twr_log_error("ow_init(): 1-wire bus scan found new device %i, but there is no free position in sensor_onewire_map", i);
         }
     }
-    // start periodic task to read temperatures from 1-wire devices
-    twr_scheduler_register(ow_read_temperatures_task, NULL, twr_tick_get() + 1000);
+    if (new_device)
+    {
+        // save new device to EEPROM
+        eeprom_write();
+    }
+    ow_rescan = false;
+
+    if (!initialized)
+    {
+        // start periodic task to read temperatures from 1-wire devices
+        twr_scheduler_register(ow_read_temperatures_task, NULL, twr_tick_get() + 1000);
+        initialized = true;
+    }
 }
 
 
@@ -441,8 +359,8 @@ void adc_event_handler(twr_adc_channel_t channel, twr_adc_event_t event, void *e
         if (twr_adc_async_get_value(channel, &value))
         {
             // convert ADC value to temperature
-            if (adc_calibration[channel].calibrated)
-                temperature = (float)value * adc_calibration[channel].gain + adc_calibration[channel].offset;
+            if (eeprom.adc_calibration[channel].calibrated)
+                temperature = (float)value * eeprom.adc_calibration[channel].gain + eeprom.adc_calibration[channel].offset;
             else
                 temperature = NAN;
             // temporary for debugging
@@ -474,7 +392,7 @@ void adc_init(void)
     initialized = true;
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
-        if (adc_calibration[i].present)
+        if (eeprom.adc_calibration[i].present)
         {
             adc_runtime[i].enabled = true;
             adc_runtime[i].raw = 0;
@@ -484,7 +402,7 @@ void adc_init(void)
     twr_adc_init();
     for (uint8_t i = 0; i < ADC_CHANNEL_COUNT; i++)
     {
-        if (adc_calibration[i].present)
+        if (eeprom.adc_calibration[i].present)
         {
             twr_adc_set_event_handler(i, adc_event_handler, NULL);
             twr_adc_oversampling_set(i, TWR_ADC_OVERSAMPLING_256);
@@ -537,19 +455,19 @@ void adc_compute_calibration(void)
         if (adc_calibration_measure_point[0].adc_value[i] < ADC_SANE_LOW || adc_calibration_measure_point[0].adc_value[i] > ADC_SANE_HIGH ||
             adc_calibration_measure_point[1].adc_value[i] < ADC_SANE_LOW || adc_calibration_measure_point[1].adc_value[i] > ADC_SANE_HIGH)
         {
-            adc_calibration[i].present = false;
-            adc_calibration[i].calibrated = false;
+            eeprom.adc_calibration[i].present = false;
+            eeprom.adc_calibration[i].calibrated = false;
             adc_runtime[i].enabled = false;
             continue;
         }
 
         // compute gain
-        adc_calibration[i].gain = (adc_calibration_measure_point[1].avg_temperature - adc_calibration_measure_point[0].avg_temperature)
+        eeprom.adc_calibration[i].gain = (adc_calibration_measure_point[1].avg_temperature - adc_calibration_measure_point[0].avg_temperature)
                                     / (float)(adc_calibration_measure_point[1].adc_value[i] - adc_calibration_measure_point[0].adc_value[i]);
         // compute offset
-        adc_calibration[i].offset = adc_calibration_measure_point[0].avg_temperature - (float)adc_calibration_measure_point[0].adc_value[i] * adc_calibration[i].gain;
-        adc_calibration[i].present = true;
-        adc_calibration[i].calibrated = true;
+        eeprom.adc_calibration[i].offset = adc_calibration_measure_point[0].avg_temperature - (float)adc_calibration_measure_point[0].adc_value[i] * eeprom.adc_calibration[i].gain;
+        eeprom.adc_calibration[i].present = true;
+        eeprom.adc_calibration[i].calibrated = true;
         adc_runtime[i].enabled = true;
 #ifdef DEBUG_ADC_CALIBRATION
         twr_log_debug("adc_compute_calibration(): ADC channel %i, gain=%.5f, offset=%.2f", i, adc_calibration[i].gain, adc_calibration[i].offset);
@@ -637,6 +555,7 @@ void adc_calibration_callback(void * param) {
                 adc_compute_calibration();
                 adc_calibration_task_id = 0;
                 twr_scheduler_unregister(adc_calibration_task_id);
+                eeprom_write();
             } else {
                 // start next calibration step
                 twr_scheduler_plan_current_relative(ADC_CALIBRATION_STEP_INTERVAL);
@@ -779,19 +698,21 @@ void tmp112_event_handler(twr_tmp112_t *self, twr_tmp112_event_t event, void *ev
         // Read temperature
         twr_tmp112_get_temperature_celsius(self, &celsius);
 
-#ifdef DEBUG            
-        twr_log_debug("tmp112_event_handler(): temperature: %.2f °C", celsius);
-#endif
+// #ifdef DEBUG            
+//         twr_log_debug("tmp112_event_handler(): temperature: %.2f °C", celsius);
+// #endif
         sensor_runtime.temp_i2c[0] = celsius;
 
         // Publish temperature on radio
-        twr_radio_pub_temperature(TWR_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_ALTERNATE, &celsius);
+        // twr_radio_pub_temperature(TWR_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_ALTERNATE, &celsius);
     }
 }
 
 // Application initialization function which is called once after boot
 void application_init(void)
 {
+    // initialize adc_runtime
+    memset(&adc_runtime, 0, sizeof(adc_runtime));
     // initialize sensor_runtime with NaN values, which can be done as filling the structure with 0xFF bytes, see https://en.wikipedia.org/wiki/IEEE_754-1985#NaN
     memset(&sensor_runtime, 0xFF, sizeof(sensor_runtime));
 
@@ -800,6 +721,12 @@ void application_init(void)
 #ifdef DEBUG
     twr_log_debug("init(): eeprom size: %i", sizeof(eeprom));
 #endif
+
+    // Initialize EEPROM
+    if (!eeprom_read()) {
+        // write default values to EEPROM
+        eeprom_write();
+    }
 
     // Initialize LED
     twr_led_init(&led, TWR_GPIO_LED, false, 0);
@@ -830,8 +757,10 @@ void application_init(void)
 #ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("init(): RPM reading init, FAN=%i, port=%i", f, fan_config[f].gpio_port);
         // temporary to test calibration
-        fan_calibration_start(f);
 #endif
+        if (!eeprom.fan_calibration[f].calibrated) {
+            fan_calibration_start(f);
+        }
     }
     // enable FAN RPM reading via GPIO (PLL is called every 1 ms)
     twr_system_pll_enable();
@@ -863,7 +792,7 @@ void application_task(void)
 
     // Log task run and increment counter
     // twr_log_debug("APP: Task run (count: %d)", ++counter);
-    twr_log_debug("APP: RPM: %d", get_rpm(0));
+    // twr_log_debug("APP: RPM: %d", get_rpm(1));
     float tmin = NAN;
     float tmax = NAN;
     float tavg = 0.0;
@@ -876,10 +805,28 @@ void application_task(void)
             if (isnan(tmax) || sensor_runtime.temp_onewire[ow_index[t].idx_runtime] > tmax)
                 tmax = sensor_runtime.temp_onewire[ow_index[t].idx_runtime];
             tavg += sensor_runtime.temp_onewire[ow_index[t].idx_runtime];
+            ow_count++;
         }
     }
     tavg /= (float)ow_slave_count;
-    twr_log_debug("APP: 1-wire thermometers: %i devices (%i active), min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", ow_slave_count, ow_count, tmin, tmax, tavg, tmax-tmin);
+    twr_log_info("APP: 1-wire thermometers: %i devices (%i active), min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", ow_slave_count, ow_count, tmin, tmax, tavg, tmax-tmin);
+    // print out whole sensor_runtime structure with each sensor group on separate line
+    /*
+    typedef struct {
+        float temp_i2c[1];
+        float temp_onewire[OW_MAX_SLAVES];
+        float temp_adc[ADC_CHANNEL_COUNT];
+    } sensor_runtime_t;
+    */
+#ifdef DEBUG
+    twr_log_info("APP: sensor_runtime: temp_i2c: [%.2f]", sensor_runtime.temp_i2c[0]);
+    twr_log_info("APP: sensor_runtime: temp_onewire: [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f]", 
+                    sensor_runtime.temp_onewire[0], sensor_runtime.temp_onewire[1], sensor_runtime.temp_onewire[2], sensor_runtime.temp_onewire[3],
+                    sensor_runtime.temp_onewire[4], sensor_runtime.temp_onewire[5], sensor_runtime.temp_onewire[6], sensor_runtime.temp_onewire[7]);
+    twr_log_info("APP: sensor_runtime: temp_adc: [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f]",
+                    sensor_runtime.temp_adc[0], sensor_runtime.temp_adc[1], sensor_runtime.temp_adc[2], sensor_runtime.temp_adc[3],
+                    sensor_runtime.temp_adc[4], sensor_runtime.temp_adc[5]);
+#endif
     // uint8_t adc_count = 0;
     // tmin = NAN;
     // tmax = NAN;
@@ -916,7 +863,14 @@ void application_task(void)
 
     // control logic
     process_map_rules();
+    publish_temperatures();
+    
+    // rescan 1-wire bus if requested
+    if (ow_rescan) {
+        ow_rescan = false;
+        ow_init();
+    }
 
     // Plan next run of this task in 1000 ms
-    twr_scheduler_plan_current_from_now(1000);
+    twr_scheduler_plan_current_from_now(10000);
 }

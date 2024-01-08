@@ -34,6 +34,7 @@ TODO
     - all rules are always processed and maximum resulting RPM is always used,
     - if thermal zone value is out of range, rule is skipped,
     - linear interpolation is used for mapping,
+- **thermal alert** - configurable tresholds for thermal zones which will trigger alert message on USB and MQTT (TODO)
 
 Notes:
 - target RPM is defined as percentage (value range 0..100) and is converted to real RPM for individual fans independently. So if there are 2 fans in group with max RPM of 1000 and 2000 respectively and RPM is set to 50%, fans will be set to 500 and 1000 RPM,
@@ -42,16 +43,25 @@ Notes:
 - sensors, zones, groups and rules can optionally be named, this is used in debug information over USB and messages over MQTT
 
 ### Thermal zone definition
-- internal representation as `uint8 tz[2]`
-- string interface representation as `Z:<index>=<ID0>-<ID2>#<name>`, where index is hexadecimal number, e.g.:
-    - `Z:0=F0-00:controller ambient` - represents ambient temperature around controller defined as difference between onboard sensor and fixed value of 0°C,
-    - `Z:1=10-11:inside case delta` - delta between 1-wire sensors `0` and `1`, for example difference between outside ambient temperature and temperature inside PC case,
+- represents thermal zone as difference between 2 sensors (constant value sensor can be used to represent real temperature)
+- string interface representation as `Z:<index>=<ID0>[-|]<ID2>#<name>`, where:
+    - index is single hexadecimal number,
+    - ID0 and ID1 are 2-digit hexadecimal numbers representing sensor IDs,
+    - `[-|]` indicates if resulting temperature is 
+        - `-` - subtraction of temperatures from ID0 and ID1, temp = ID0 - ID1 (may be negative)
+        - `|` - difference between temperatures from ID0 and ID1, temp = abs(ID0 - ID1) (always positive)
+- example:
+    - `Z:0=00-F0#controller ambient` - represents ambient temperature around controller defined as difference between onboard sensor and fixed value of 0°C,
+    - `Z:1=10|11#inside case delta` - delta between 1-wire sensors `0` and `1`, for example difference between outside ambient temperature and temperature inside PC case,
+    - `Z:2=25-F0#EOL water temp` - temperature of water at the end of the cooling loop (difference between last NTC sensor in loop and constant 0°C).
 
 ### Fan group definition
-- internal representation as `uint8 fg`, where bits 0-4 indicates if given fan is part of the group,
-- string representation as `G:<index>=<binary value>#<name>`, where each bit in 5-bit binary value represent PWM ports, with `1` meaning the PWM output is part of the group and leftmost bit has highest index, e.g.:
-    - `G:0=10000` - only PWM port 5 (pump) is part of the group,
-    - `G:2=00011` - PWM ports 1 and 2 are part of the group
+- string representation as `G:<index>=<binary value>#<name>`, where
+    - each bit in 5-bit binary value represent PWM ports, with `1` meaning the PWM output is part of the group and leftmost bit has highest index,
+- example:
+    - `G:0=10000#pump` - only PWM port 5 (pump) is part of the group,
+    - `G:1=01111#all radiators` - PWM ports 1 to 4 are part of the group
+    - `G:2=00011#front radiator` - PWM ports 1 and 2 are part of the group
 
 ### Map rule definition
 - string representation as `R:<index>=Z<zone>(t1,t2)G<group>(s1,s2)#<name>`, where:
@@ -61,6 +71,18 @@ Notes:
     - *t1*/*t2* - start/end of temperature range as float in °C,
     - *s1*/*s2* - start/end of relative speed range as float in <0..1> interval,
     - *name* - string, max 15 chars.
+- example:
+    - `R:0=Z4(0.2,3)G1(0.0,1)#GPU delta to AllR`
+
+### Thermal alert definition
+- string representation as `A:<index>=Z<zone>[operator]temp#<text>`, where:
+    - *index* - single hex digit (`0`..`F`) as map rule index,
+    - *zone* - single hex digit (`0`..`F`) as thermal zone index,
+    - *operator* - ether `>` or `<`, indicating whether zone temperature has to be higher (`>`) or lower (`<`) than specified temperature,
+    - *temp* - temperature as float in °C,
+    - *text* - string, max 31 chars, will be used as format specifier in snprintf() with single float parameter representing thermal zone temperature.
+- example:
+    - `A:0=Z2>50#Temperature in cooling loop is too high! t=%.1f`
 
 ## Controls
 Upon first start, all connected fans will be detected and calibrated.

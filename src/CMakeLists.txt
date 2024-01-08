@@ -3,7 +3,9 @@ target_sources(
     ${CMAKE_PROJECT_NAME}
     PUBLIC
     application.c
+    eeprom.c
     fan.c
+    mqtt.c
     )
 
 # If you added some folder with header files you need to list them here

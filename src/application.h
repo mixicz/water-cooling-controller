@@ -4,24 +4,30 @@
 #include <twr.h>
 #include <bcl.h>
 
+#include <eeprom.h>
 #include <fan.h>
+#include <mqtt.h>
 
 // Application version
 // #define FW_VERSION "1.0"
 #define EEPROM_SIGNATURE        0x57434330
 #define EEPROM_VERSION          0x01
 
+#define MQTT_REPORT_TEMP_DELTA  0.2
+#define MQTT_REPORT_TEMP_INTERVAL 600000
+
 // #define DEBUG   true   // not needed, DEBUG is defined in ninja build file
 
 #ifdef DEBUG
-// #define DEBUG_FAN_CALIBRATION   true
+#define DEBUG_FAN_CALIBRATION   true
 // #define DEBUG_FAN               true
 // #define DEBUG_ONEWIRE           true
 // #define DEBUG_ADC               true
-#define DEBUG_ADC_CALIBRATION   true
+// #define DEBUG_ADC_CALIBRATION   true
 // #define DEBUG_PCA9685           true
 // #define DEBUG_CONTROL           true
 #define DEBUG_MQTT              true
+#define DEBUG_EEPROM            true
 #endif
 
 // control logic
@@ -36,6 +42,13 @@
 
 // 1-wire configuration
 # define OW_MAX_SLAVES 8
+
+// 1-wire sensor mapping between runtime and list in eeprom
+typedef struct {
+    uint8_t idx_runtime;
+    uint8_t idx_list;
+    bool enabled;
+} ow_index_t;
 
 // onewire sensor mapping to provide constant ID for each sensor
 typedef struct {
@@ -123,13 +136,15 @@ typedef struct {
     thermal_zone_t thermal_zone[MAX_THERMAL_ZONES];
     fan_group_t fan_group[MAX_FAN_GROUPS];
     map_rule_t map_rule[MAX_MAP_RULES];
-} eeprom_t;
+    // CRC must be the last field in this structure
+    uint32_t crc;
+} __attribute__((packed)) eeprom_t;
 
 extern eeprom_t eeprom;
-extern config_t *config;
-extern fan_user_config_t *fan_user_config;
-extern fan_calibration_t *fan_calibration;
-extern adc_calibration_t *adc_calibration;
+extern bool ow_rescan;
+extern sensor_runtime_t sensor_runtime;
+extern ow_index_t ow_index[OW_MAX_SLAVES];
 
+int ow_runtime_idx(uint8_t list_idx);
 
 #endif
