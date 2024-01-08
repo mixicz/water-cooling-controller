@@ -116,7 +116,7 @@ void mqtt_reply(const char *message, const char *topic, const char *payload) {
 
 bool config_set_sensor_onewire(const char * cfg, const char *topic) {
     uint8_t index = hex2int(cfg[2]);
-    if (index < 0) {
+    if (index < 0 || index >= OW_MAX_SLAVES) {
         mqtt_error("invalid config index", topic, cfg);
         return false;
     }
@@ -163,17 +163,117 @@ bool config_set_sensor_onewire(const char * cfg, const char *topic) {
     return false;
 }
 
+// Z:0=00-F0#controller ambient
 bool config_set_thermal_zone(const char * cfg, const char *topic) {
     // TODO
-    return false;
+    uint8_t index = hex2int(cfg[2]);
+    if (index < 0 || index >= MAX_THERMAL_ZONES) {
+        mqtt_error("invalid config index", topic, cfg);
+        return false;
+    }
+
+    uint8_t sensors[2] = {0, 0};
+    bool absolute = false;
+    char *name = NULL;
+
+    // parse sensor 1
+    int s1 = hex2int(cfg[4]);
+    int s2 = hex2int(cfg[5]);
+    if (s1 < 0 || s1 >= 16 || s2 < 0 || s2 >= 16) {
+        mqtt_error("invalid config sensors", topic, cfg);
+        return false;
+    }
+    sensors[0] = s1*16+s2;
+
+    // parse sensor 2
+    s1 = hex2int(cfg[7]);
+    s2 = hex2int(cfg[8]);
+    if (s1 < 0 || s1 >= 16 || s2 < 0 || s2 >= 16) {
+        mqtt_error("invalid config sensors", topic, cfg);
+        return false;
+    }
+    sensors[1] = s1*16+s2;
+
+    // parse absolute flag
+    switch (cfg[6]) {
+        case '-':
+            absolute = false;
+            break;
+        case '|':
+            absolute = true;
+            break;
+        default:
+            mqtt_error("invalid config absolute flag", topic, cfg);
+            return false;
+    }
+
+    // check if there is a zone name after optional #
+    if (cfg[9] == '#') {
+        name = (char *)&cfg[10];
+        if (strlen(name) > THERMAL_ZONE_NAME_LENGTH) {
+            // name too long - log error and cut it
+            twr_log_error("config_set_thermal_zone(): thermal zone name too long, cutting to %d chars (%s)", THERMAL_ZONE_NAME_LENGTH, name);
+            name[THERMAL_ZONE_NAME_LENGTH] = 0;
+        }
+    }
+
+    // store thermal zone to eeprom at given index
+    eeprom.thermal_zone[index].sensors[0] = sensors[0];
+    eeprom.thermal_zone[index].sensors[1] = sensors[1];
+    eeprom.thermal_zone[index].absolute = absolute;
+    if (name != NULL)
+        strncpy(eeprom.thermal_zone[index].name, name, THERMAL_ZONE_NAME_LENGTH);
+    else
+        eeprom.thermal_zone[index].name[0] = 0;
+
+    return true;
 }
 
+// G:0=10000#pump
 bool config_set_fan_group(const char * cfg, const char *topic) {
-    // TODO
-    return false;
+    uint8_t index = hex2int(cfg[2]);
+    if (index < 0 || index >= MAX_FAN_GROUPS) {
+        mqtt_error("invalid config index", topic, cfg);
+        return false;
+    }
+
+    uint8_t fans = 0;
+    for (int i = 4; i < 9; i++) {
+        if (cfg[i] == '1')
+            fans |= 1 << (8 - i);
+        else if (cfg[i] != '0') {
+            mqtt_error("invalid config fans", topic, cfg);
+            return false;
+        }
+    }
+
+    // check if there is a group name after optional #
+    char *name = NULL;
+    if (cfg[9] == '#') {
+        name = (char *)&cfg[10];
+        if (strlen(name) > FAN_GROUP_NAME_LENGTH) {
+            // name too long - log error and cut it
+            twr_log_error("config_set_fan_group(): fan group name too long, cutting to %d chars (%s)", FAN_GROUP_NAME_LENGTH, name);
+            name[FAN_GROUP_NAME_LENGTH] = 0;
+        }
+    }
+
+    // store fan group to eeprom at given index
+    eeprom.fan_group[index].fans = fans;
+    if (name != NULL)
+        strncpy(eeprom.fan_group[index].name, name, FAN_GROUP_NAME_LENGTH);
+    else
+        eeprom.fan_group[index].name[0] = 0;
+    
+    return true;
 }
 
 bool config_set_map_rule(const char * cfg, const char *topic) {
+    // TODO
+    return false;
+}
+
+bool config_set_thermal_alert(const char * cfg, const char *topic) {
     // TODO
     return false;
 }
@@ -207,6 +307,9 @@ void config_set(uint64_t *id, const char *topic, void *value, void *param) {
             break;
         case 'R':
             ok = config_set_map_rule(cfg, topic);
+            break;
+        case 'A':
+            ok = config_set_thermal_alert(cfg, topic);
             break;
         default:
             mqtt_error("invalid config type", topic, cfg);

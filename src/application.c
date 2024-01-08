@@ -66,7 +66,7 @@ eeprom_t eeprom = {
     },
     .thermal_zone = {
         { .name = "zero", .sensors = {0xF0, 0xF0}, .absolute = true},           // 0: virtual zone with constant value 0.0 °C
-        { .name = "temp_controller", .sensors = {0, 0xF0}, .absolute = false},  // 1
+        { .name = "temp_loop", .sensors = {0x23, 0xF0}, .absolute = false},     // 1: water temperature at end of loop
         { .name = "temp_outside", .sensors = {0x10, 0xF0}, .absolute = false},  // 2
         { .name = "temp_inside", .sensors = {0x11, 0xF0}, .absolute = false},   // 3
         { .name = "delta_gpu", .sensors = {0x20, 0x21}, .absolute = true},      // 4
@@ -88,6 +88,10 @@ eeprom_t eeprom = {
         { .name = "cpu_pump", .thermal_zone = 5, .fan_group = 0, .temperature = {0.2, 3.0}, .speed = {0.2, 1.0}},
         { .name = "case_ambient", .thermal_zone = 6, .fan_group = 1, .temperature = {10.0, 20.0}, .speed = {0.2, 0.8}},
         { .name = "water_loop", .thermal_zone = 7, .fan_group = 1, .temperature = {5.0, 25.0}, .speed = {0.0, 1.0}},
+    },
+    .thermal_alert = {
+        { .thermal_zone = 1, .temperature = 60.0, .gt = true, .text = "Water temperature at EOL is too high! t=%.1f"},
+        { .thermal_zone = 3, .temperature = 50.0, .gt = true, .text = "Temperature inside the case is too high! t=%.1f"},
     },
 };
 

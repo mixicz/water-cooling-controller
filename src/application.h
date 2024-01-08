@@ -95,6 +95,16 @@ typedef struct {
     char name[MAP_RULE_NAME_LENGTH];
 } map_rule_t;
 
+// thermal alert configuration
+#define MAX_THERMAL_ALERTS 16
+#define THERMAL_ALERT_TEXT_LENGTH 32
+typedef struct {
+    uint8_t thermal_zone;
+    bool gt;    // true if alert is triggered when temperature is greater than threshold, false if alert is triggered when temperature is lower than threshold
+    float temperature;
+    char text[THERMAL_ALERT_TEXT_LENGTH];
+} thermal_alert_t;
+
 // configuration structure
 typedef struct {
     uint8_t version;
@@ -136,6 +146,7 @@ typedef struct {
     thermal_zone_t thermal_zone[MAX_THERMAL_ZONES];
     fan_group_t fan_group[MAX_FAN_GROUPS];
     map_rule_t map_rule[MAX_MAP_RULES];
+    thermal_alert_t thermal_alert[MAX_THERMAL_ALERTS];
     // CRC must be the last field in this structure
     uint32_t crc;
 } __attribute__((packed)) eeprom_t;
