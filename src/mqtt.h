@@ -3,6 +3,8 @@
 
 #include <twr.h>
 
+#define MQTT_CONFIG_DUMP_INTERVAL 150
+
 // helper functions
 int hex2int(char c);
 
@@ -11,5 +13,6 @@ void config_set(uint64_t *id, const char *topic, void *value, void *param);
 void config_get(uint64_t *id, const char *topic, void *value, void *param);
 
 void publish_temperatures(void);
+void mqtt_init(void);
 
 #endif // _MQTT_H_

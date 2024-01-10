@@ -59,7 +59,7 @@ eeprom_t eeprom = {
         { .present = true, .calibrated = false, .offset = ADC_DEFAULT_OFFSET, .gain = ADC_DEFAULT_GAIN},
     },
     .sensor_onewire_map = {
-        {0, 0},
+        {0},
     },
     .sensor_const = {
         { .temperature = 0.0},
@@ -90,8 +90,8 @@ eeprom_t eeprom = {
         { .name = "water_loop", .thermal_zone = 7, .fan_group = 1, .temperature = {5.0, 25.0}, .speed = {0.0, 1.0}},
     },
     .thermal_alert = {
-        { .thermal_zone = 1, .temperature = 60.0, .gt = true, .text = "Water temperature at EOL is too high! t=%.1f"},
-        { .thermal_zone = 3, .temperature = 50.0, .gt = true, .text = "Temperature inside the case is too high! t=%.1f"},
+        { .thermal_zone = 1, .temperature = 60.0, .gt = true, .text = "High water temp at EOL! t=%.1f"},
+        { .thermal_zone = 3, .temperature = 50.0, .gt = true, .text = "High temp in case! t=%.1f"},
     },
 };
 
@@ -140,6 +140,10 @@ uint16_t button_click_count = 0;
 
 // ==== control logic ====
 // read temperature from sensor with given ID
+// when DEBUG_CONTROL is defined, this function emulates changing temperature on SENSOR_BUS_CONST idx >= 8:
+// - temperature oscilates between 0.0 and eeprom.sensor_const[idx].temperature,
+// - period is computed as 5 seconds * 2 ^ (idx - 8),
+// - timing source is twr_tick_get() which is incremented every 1 ms
 float read_temperature(uint8_t id)
 {
     uint8_t bus = id & 0xF0;
@@ -152,8 +156,21 @@ float read_temperature(uint8_t id)
             return sensor_runtime.temp_onewire[idx];
         case SENSOR_BUS_ADC:
             return sensor_runtime.temp_adc[idx];
+#ifdef DEBUG_CONTROL
+        case SENSOR_BUS_CONST:
+            {
+                twr_tick_t ref = twr_tick_get();
+                float period = 5000.0 * (1 << (idx - 8));
+                float step = (ref % (period * 2)) / period;
+                if (step > 1.0)
+                    step = 2.0 - step;
+                temperature = step * eeprom.sensor_const[idx].temperature;
+                return temperature;
+            }
+#else
         case SENSOR_BUS_CONST:
             return eeprom.sensor_const[idx].temperature;
+#endif
         default:
             return NAN;
     }
@@ -362,8 +379,9 @@ void adc_event_handler(twr_adc_channel_t channel, twr_adc_event_t event, void *e
         float temperature = 0;
         if (twr_adc_async_get_value(channel, &value))
         {
-            // convert ADC value to temperature
-            if (eeprom.adc_calibration[channel].calibrated)
+            // convert ADC value to temperature - check for sane calibration values
+            // if (eeprom.adc_calibration[channel].calibrated)
+            if (fabs(eeprom.adc_calibration[channel].offset) > 1.0)
                 temperature = (float)value * eeprom.adc_calibration[channel].gain + eeprom.adc_calibration[channel].offset;
             else
                 temperature = NAN;
@@ -424,12 +442,8 @@ Calibration points will be stored in adc_calibration_measure_point[] array.
 When we have all calibration points, we will compute ADC calibration data (offset and gain) and store it in adc_calibration[] array.
 */
 #define ADC_CALIBRATION_RING_LEN 8
-#define ADC_CALIBRATION_TEMP_DELTA 6.0
-#define ADC_CALIBRATION_TEMP_STABLE 1.0
-// #define ADC_CALIBRATION_STEP_INTERVAL 5000
-#define ADC_CALIBRATION_STEP_INTERVAL 1000
 #define ADC_CALIBRATION_POINTS 2
-// TODO adjust sane values from real measurements
+// sane values from real measurements
 #define ADC_SANE_LOW 6000
 #define ADC_SANE_HIGH 58000
 
@@ -474,7 +488,7 @@ void adc_compute_calibration(void)
         eeprom.adc_calibration[i].calibrated = true;
         adc_runtime[i].enabled = true;
 #ifdef DEBUG_ADC_CALIBRATION
-        twr_log_debug("adc_compute_calibration(): ADC channel %i, gain=%.5f, offset=%.2f", i, adc_calibration[i].gain, adc_calibration[i].offset);
+        twr_log_debug("adc_compute_calibration(): ADC channel %i, gain=%.5f, offset=%.2f", i, eeprom.adc_calibration[i].gain, eeprom.adc_calibration[i].offset);
 #endif
     }
 }
@@ -548,7 +562,7 @@ void adc_calibration_callback(void * param) {
 #ifdef DEBUG_ADC_CALIBRATION
             for (uint8_t j = 0; j < ADC_CHANNEL_COUNT; j++)
             {
-                twr_log_debug("adc_calibration_callback(): ADC calibration point %i: Temperature=%.2f, ADC Value=%u", adc_calibration_measure_point_pos, avg.avg_temperature, avg.adc_value[j]);
+                twr_log_debug("adc_calibration_callback(): ADC %i calibration point %i: Temperature=%.2f, ADC Value=%u", j, adc_calibration_measure_point_pos, avg.avg_temperature, avg.adc_value[j]);
             }
 #endif                
             // store calibration point
@@ -559,7 +573,13 @@ void adc_calibration_callback(void * param) {
                 adc_compute_calibration();
                 adc_calibration_task_id = 0;
                 twr_scheduler_unregister(adc_calibration_task_id);
+#ifdef DEBUG_ADC_CALIBRATION
+                twr_log_debug("adc_calibration_callback(): writing calibration data to eeprom");
+#endif
                 eeprom_write();
+#ifdef DEBUG_ADC_CALIBRATION
+                twr_log_debug("adc_calibration_callback(): eeprom write done");
+#endif
             } else {
                 // start next calibration step
                 twr_scheduler_plan_current_relative(ADC_CALIBRATION_STEP_INTERVAL);
@@ -776,16 +796,13 @@ void application_init(void)
     // Initialize ADC
     adc_init();
 #ifdef DEBUG_ADC_CALIBRATION
-    adc_calibration_start();
+    // adc_calibration_start();
 #endif
 
     // Initialize PCA9685 PWM controller
     // pca9685_init();
 
-    // Initialize radio - keep listening as we are not on battery
-    twr_radio_init(TWR_RADIO_MODE_NODE_LISTENING);
-    // Send radio pairing request
-    twr_radio_pairing_request("water-cooler", FW_VERSION);
+    mqtt_init();
 }
 
 // Application task function (optional) which is called peridically if scheduled

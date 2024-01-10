@@ -42,6 +42,18 @@ Notes:
 - if no target RPM is determined for the fan, default RPM value of the fan is used,
 - sensors, zones, groups and rules can optionally be named, this is used in debug information over USB and messages over MQTT
 
+### Sensor onewire
+- maps 1-wire sensor address to sensor ID
+- string representation as `O:<index>=<address>`, where
+    - *index* - single hex digit (`0`..`F`) as 1-wire sensor index,
+    - *address* - 64-bit hexadecimal number as 1-wire device address
+
+### Sensor fixed
+- maps fixed sensor value to sensor index
+- string representation as `F:<index>=<temperature>`, where
+    - *index* - single hex digit (`0`..`F`) as fixed sensor index,
+    - *temperature* - float value in °C
+
 ### Thermal zone definition
 - represents thermal zone as difference between 2 sensors (constant value sensor can be used to represent real temperature)
 - string interface representation as `Z:<index>=<ID0>[-|]<ID2>#<name>`, where:

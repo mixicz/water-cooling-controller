@@ -22,12 +22,12 @@
 #define DEBUG_FAN_CALIBRATION   true
 // #define DEBUG_FAN               true
 // #define DEBUG_ONEWIRE           true
-// #define DEBUG_ADC               true
-// #define DEBUG_ADC_CALIBRATION   true
+#define DEBUG_ADC               true
+#define DEBUG_ADC_CALIBRATION   true
 // #define DEBUG_PCA9685           true
 // #define DEBUG_CONTROL           true
 #define DEBUG_MQTT              true
-#define DEBUG_EEPROM            true
+// #define DEBUG_EEPROM            true
 #endif
 
 // control logic
@@ -52,7 +52,6 @@ typedef struct {
 
 // onewire sensor mapping to provide constant ID for each sensor
 typedef struct {
-    uint8_t index;
     uint64_t address;
 } sensor_onewire_t;
 
@@ -116,9 +115,15 @@ typedef struct {
 
 // ADC configuration
 #define ADC_CHANNEL_COUNT 6
-// TODO - replace with real measured values
-#define ADC_DEFAULT_OFFSET 0.0
-#define ADC_DEFAULT_GAIN 1.0
+// real measured values for ADC channels
+#define ADC_DEFAULT_OFFSET 79.0
+#define ADC_DEFAULT_GAIN -0.00162
+
+// ADC calibration
+#define ADC_CALIBRATION_TEMP_DELTA 20.0
+#define ADC_CALIBRATION_TEMP_STABLE 0.5
+// #define ADC_CALIBRATION_STEP_INTERVAL 5000
+#define ADC_CALIBRATION_STEP_INTERVAL 2000
 
 // ADC calibration data
 typedef struct {
@@ -154,7 +159,7 @@ typedef struct {
 extern eeprom_t eeprom;
 extern bool ow_rescan;
 extern sensor_runtime_t sensor_runtime;
-extern ow_index_t ow_index[OW_MAX_SLAVES];
+extern ow_index_t ow_index[SENSOR_MAX_COUNT];
 
 int ow_runtime_idx(uint8_t list_idx);
 

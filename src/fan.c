@@ -301,14 +301,12 @@ void fan_compute_calibration(uint8_t fan)
 #ifdef DEBUG_FAN_CALIBRATION
             twr_log_debug("fan_compute_calibration(): FAN %i: lower 0-20%% of PWM range seems usable", fan);
 #endif
-            eeprom.fan_calibration[fan].calibrated = true;
             eeprom.fan_user_config[fan].min_speed = 0.0;
             eeprom.fan_calibration[fan].min_pwm = 0;
         } else {
 #ifdef DEBUG_FAN_CALIBRATION
             twr_log_debug("fan_compute_calibration(): FAN %i: lower 10-20%% of PWM range seems usable", fan);
 #endif
-            eeprom.fan_calibration[fan].calibrated = true;
             eeprom.fan_user_config[fan].min_speed = 0.1;
             eeprom.fan_calibration[fan].min_pwm = FAN_PWM_MAX / 10;
         }
@@ -321,6 +319,7 @@ void fan_compute_calibration(uint8_t fan)
             eeprom.fan_calibration[fan].min_pwm = FAN_PWM_MIN;
         }
     }
+    eeprom.fan_calibration[fan].calibrated = true;
 
 #ifdef DEBUG_FAN_CALIBRATION
     float rpm_deviation[FAN_CALIBRATION_STEPS];
