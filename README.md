@@ -3,20 +3,43 @@
 TODO
 
 ## TODO list
-- way to detect IDs of 1-wire sensors
-- configurable numbers of 1-wire sensors
+- :heavy_check_mark: 1-wire thermometer configuration
+- :heavy_check_mark: configurable names for all entities
+- :heavy_check_mark: ADC calibration
+- :heavy_check_mark: ADC periodic temperature readings
+- :question: status LEDs via Adafruit PCA9685 PWM driver - might get replaced by DRGB support instead to drive RGB lightning and use it for alerts and statuses as well (changing color based on sensors, blinking on alerts / calibration)
+- :heavy_check_mark: save config and calibration data to EEPROM
+- :heavy_check_mark: load config and calibration data from EEPROM
+- :heavy_check_mark: automatic FAN calibration
+- ~~performance profiles for FANs~~ (not really necessary)
+- :heavy_check_mark: MQTT - reporing temperatures
+- MQTT - reporting alarms and statuses
+    - :heavy_check_mark: unusually high temperature, 
+    - FAN failure, 
+    - :heavy_check_mark: start/stop calibration (ADC only),
+- MQTT - commands:
+    - start/stop calibration,
+- MQTT - set/get config values:
+    - :heavy_check_mark: control logic,
+    - ADC calibration values,
+    - PWM ramp times
+- :heavy_check_mark: LED control:
+    - on - NTC calibration in progress, waiting for temperature stabilization
+    - brief flashes - NTC calibration in progress, waiting for temperature change
+    - blinking - fan calibration in progress
+    - off - normal operation
 
 ## features
 * cooling control based on measured temperatures inside and outside of a cooling loop instead of OS reported values,
 * fan detection and calibration,
-* NTC thermistor detection and calibration (requires already calibrated sensor on 1-wire)
+* NTC thermistor detection and calibration (requires at least one already calibrated sensor on 1-wire)
 * 1-wire temperature sensor detection
 * HW features:
     * 6 NTC thermistor ports,
-    * 5 PWM ports for fans and pumps,
-    * built-in temperature sensor on core module
-    * 1-wire bus for additional temperature sensors
-    * I2C bus for additional PWM LEDs via PCA9685
+    * 5 PWM ports for fans and pump,
+    * built-in temperature sensor on core module,
+    * 1-wire bus for additional temperature sensors,
+    * I2C bus for additional PWM LEDs via PCA9685,
 
 ## Concepts
 - **sensor** – value from temperature sensor, each sensor have unique ID in form of 8-bit hexadecimal value, where bus is higher 4-bits and number are lower 4-bits:
@@ -25,7 +48,7 @@ TODO
     - NTC sensor (bus `2`, number is given by ADC channel 0..5)
     - fixed value (bus `F`), there are predefined numbers:
         - `0`: 0°C
-        - `1`-`3`: reserved for future use
+        - `1`-`3`: undefined - reserved for future use (0°C at this moment, but it might change in future)
         - `4`-`F`: user configurable, default value is 0°C
 - **thermal zone** – delta of 2 sensors (absolute value) in °C
 - **fan group** – set of 0..N PWM outputs
@@ -41,6 +64,14 @@ Notes:
 - target RPM of each individual fan is set to maximum RPM value of all processed rules,
 - if no target RPM is determined for the fan, default RPM value of the fan is used,
 - sensors, zones, groups and rules can optionally be named, this is used in debug information over USB and messages over MQTT
+
+## MQTT communication
+> [!NOTE] 
+> We deliberately use short topic names in order to allow for larger payload, as topic+message must fit into 60 byte radio message.
+
+### `wc/-/config/*`
+- `wc/-/config/set` - sets configuration value to any of below options (confirmation message on `cfg/set` topic),
+- `wc/-/config/get` - dumps all configuration to MQTT `cfg/#` topics (e.g. `cfg/ow`, `cfg/sf`, `cfg/tz`),
 
 ### Sensor onewire
 - maps 1-wire sensor address to sensor ID
@@ -81,6 +112,7 @@ Notes:
     - *zone* - single hex digit (`0`..`F`) as thermal zone index,
     - *group* - single hex digit (`0`..`F`) as fan group index,
     - *t1*/*t2* - start/end of temperature range as float in °C,
+        - for temperatures below or above specified interval, *s1* or *s2* speed will be used respectively,
     - *s1*/*s2* - start/end of relative speed range as float in <0..1> interval,
     - *name* - string, max 15 chars.
 - example:

@@ -4,8 +4,8 @@
 
 /*
 TODO list:
-- 1-wire thermometer configuration
-- configurable names for all entities
++- 1-wire thermometer configuration
++- configurable names for all entities
 - ADC calibration
 - ADC periodic temperature readings
 - status LEDs via Adafruit PCA9685 PWM driver
@@ -13,7 +13,7 @@ TODO list:
 +- load config and calibration data from EEPROM
 +- automatic FAN calibration
 /- performance profiles for FANs
-- MQTT - reporing temperatures, FAN speeds
++- MQTT - reporing temperatures
 - MQTT - reporting alarms (unusually high temperature, FAN failure, start/stop calibration, ...)
 - MQTT - commands to set profile, start calibration, ...
 - MQTT - set config values
@@ -82,11 +82,11 @@ eeprom_t eeprom = {
         { .name = "rad_back", .fans = 0x08},    // 4
     },
     .map_rule = {
-        { .name = "idle_pump", .thermal_zone = 0, .fan_group = 0, .temperature = {-0.1, 0.1}, .speed = {0.2, 0.2}}, // default rule to keep pump running at minimum speed at idle
+        // { .name = "idle_pump", .thermal_zone = 0, .fan_group = 0, .temperature = {-0.1, 0.1}, .speed = {0.2, 0.2}}, // default rule to keep pump running at minimum speed at idle
         { .name = "idle_rad", .thermal_zone = 0, .fan_group = 1, .temperature = {-0.1, 0.1}, .speed = {0.0, 0.0}}, // default rule to keep radiator fans off at idle
-        { .name = "gpu_pump", .thermal_zone = 4, .fan_group = 0, .temperature = {0.2, 3.0}, .speed = {0.2, 1.0}},
-        { .name = "cpu_pump", .thermal_zone = 5, .fan_group = 0, .temperature = {0.2, 3.0}, .speed = {0.2, 1.0}},
-        { .name = "case_ambient", .thermal_zone = 6, .fan_group = 1, .temperature = {10.0, 20.0}, .speed = {0.2, 0.8}},
+        { .name = "gpu_pump", .thermal_zone = 4, .fan_group = 0, .temperature = {0.3, 3.0}, .speed = {0.2, 1.0}},
+        { .name = "cpu_pump", .thermal_zone = 5, .fan_group = 0, .temperature = {0.3, 3.0}, .speed = {0.2, 1.0}},
+        { .name = "case_ambient", .thermal_zone = 6, .fan_group = 1, .temperature = {10.0, 20.0}, .speed = {0.0, 0.8}},
         { .name = "water_loop", .thermal_zone = 7, .fan_group = 1, .temperature = {5.0, 25.0}, .speed = {0.0, 1.0}},
     },
     .thermal_alert = {
@@ -158,15 +158,17 @@ float read_temperature(uint8_t id)
             return sensor_runtime.temp_adc[idx];
 #ifdef DEBUG_CONTROL
         case SENSOR_BUS_CONST:
-            {
+            if (idx >= 8) {
                 twr_tick_t ref = twr_tick_get();
-                float period = 5000.0 * (1 << (idx - 8));
-                float step = (ref % (period * 2)) / period;
+                int period = 5000 * (1 << (idx - 8));
+                float step = (float)(ref % (period * 2)) / (float)period;
                 if (step > 1.0)
                     step = 2.0 - step;
-                temperature = step * eeprom.sensor_const[idx].temperature;
-                return temperature;
+                return step * eeprom.sensor_const[idx].temperature;;
+            } else {
+                return eeprom.sensor_const[idx].temperature;
             }
+            break;  // to satisfy compiler and prevent warning
 #else
         case SENSOR_BUS_CONST:
             return eeprom.sensor_const[idx].temperature;
@@ -197,9 +199,9 @@ float compute_thermal_zone_temperature(uint8_t zone)
 // process all map rules
 void process_map_rules(void)
 {
-    float target_rpm[MAX_FANS];
-    for (uint8_t i = 0; i < MAX_FANS; i++)
-        target_rpm[i] = -1.0;
+    float target_rpm_group[MAX_FAN_GROUPS];
+    for (uint8_t i = 0; i < lena(target_rpm_group); i++)
+        target_rpm_group[i] = -1.0;
     for (uint8_t i = 0; i < MAX_MAP_RULES; i++)
     {
         if (eeprom.map_rule[i].thermal_zone == 0)
@@ -212,24 +214,95 @@ void process_map_rules(void)
             // rule matches, compute target RPM using linear interpolation
             float speed = (temperature - eeprom.map_rule[i].temperature[0]) / (eeprom.map_rule[i].temperature[1] - eeprom.map_rule[i].temperature[0]);
             float rpm = eeprom.map_rule[i].speed[0] + speed * (eeprom.map_rule[i].speed[1] - eeprom.map_rule[i].speed[0]);
-            if (rpm > target_rpm[eeprom.map_rule[i].fan_group])
-                target_rpm[eeprom.map_rule[i].fan_group] = rpm;
+            if (rpm > target_rpm_group[eeprom.map_rule[i].fan_group])
+                target_rpm_group[eeprom.map_rule[i].fan_group] = rpm;
 #ifdef DEBUG_CONTROL
-            twr_log_debug("process_map_rules(): rule %i matches, zone[%i] temperature=%.2f, rule temperature=%.1f-%.1f, rule speed=%.2f=%.2f, rpm=%.2f, target=%.2f", 
-                            i, map_rule[i].thermal_zone, temperature, map_rule[i].temperature[0], map_rule[i].temperature[1], map_rule[i].speed[0], map_rule[i].speed[1], rpm, target_rpm[map_rule[i].fan_group]);
+            twr_log_debug("process_map_rules(): rule %i matches inside interval, zone[%i] temperature=%.2f, rule temperature=%.1f-%.1f, rule speed=%.2f=%.2f, rpm=%.2f, target=%.2f", 
+                            i, eeprom.map_rule[i].thermal_zone, temperature, eeprom.map_rule[i].temperature[0], eeprom.map_rule[i].temperature[1], eeprom.map_rule[i].speed[0], eeprom.map_rule[i].speed[1], rpm, target_rpm_group[eeprom.map_rule[i].fan_group]);
 #endif                
+        } else if (temperature < eeprom.map_rule[i].temperature[0]) {
+            // temperature is below range, use minimum speed
+            if (eeprom.map_rule[i].speed[0] > target_rpm_group[eeprom.map_rule[i].fan_group])
+                target_rpm_group[eeprom.map_rule[i].fan_group] = eeprom.map_rule[i].speed[0];
+#ifdef DEBUG_CONTROL
+            twr_log_debug("process_map_rules(): rule %i matches below interval, zone[%i] temperature=%.2f, rule temperature=%.1f-%.1f, rule speed=%.2f=%.2f, rpm=%.2f, target=%.2f", 
+                            i, eeprom.map_rule[i].thermal_zone, temperature, eeprom.map_rule[i].temperature[0], eeprom.map_rule[i].temperature[1], eeprom.map_rule[i].speed[0], 
+                            eeprom.map_rule[i].speed[1], eeprom.map_rule[i].speed[0], target_rpm_group[eeprom.map_rule[i].fan_group]);
+#endif                
+        } else if (temperature > eeprom.map_rule[i].temperature[1]) {
+            // temperature is above range, use maximum speed
+            if (eeprom.map_rule[i].speed[1] > target_rpm_group[eeprom.map_rule[i].fan_group])
+                target_rpm_group[eeprom.map_rule[i].fan_group] = eeprom.map_rule[i].speed[1];
+#ifdef DEBUG_CONTROL
+            twr_log_debug("process_map_rules(): rule %i matches above interval, zone[%i] temperature=%.2f, rule temperature=%.1f-%.1f, rule speed=%.2f=%.2f, rpm=%.2f, target=%.2f", 
+                            i, eeprom.map_rule[i].thermal_zone, temperature, eeprom.map_rule[i].temperature[0], eeprom.map_rule[i].temperature[1], eeprom.map_rule[i].speed[1], 
+                            eeprom.map_rule[i].speed[1], eeprom.map_rule[i].speed[1], target_rpm_group[eeprom.map_rule[i].fan_group]);
+#endif
         }
     }
+
+    float target_rpm_fan[MAX_FANS];
+    for (uint8_t i = 0; i < lena(target_rpm_fan); i++)
+        target_rpm_fan[i] = -1.0;
+
+    // compute target RPM for each fan to maximum value from all groups it belongs to
+    for (uint8_t i = 0; i < lena(target_rpm_group); i++) {
+        if (target_rpm_group[i] >= 0.0) {
+            for (uint8_t j = 0; j < lena(target_rpm_fan); j++) {
+                if (eeprom.fan_group[i].fans & (1 << j)) {
+                    if (target_rpm_fan[j] < 0.0 || target_rpm_fan[j] < target_rpm_group[i])
+                        target_rpm_fan[j] = target_rpm_group[i];
+                }
+            }
+        }
+    }
+#ifdef DEBUG_CONTROL
+    for (uint8_t i = 0; i < lena(target_rpm_fan); i++) {
+        twr_log_debug("process_map_rules(): fan %i, target_rpm=%.2f", i, target_rpm_fan[i]);
+    }
+#endif
 
     // set target RPM for all fans
     for (uint8_t i = 0; i < MAX_FANS; i++)
     {
-        if (target_rpm[i] >= 0.0)
-            fan_set_speed(i, target_rpm[i]);
+        if (target_rpm_fan[i] >= 0.0)
+            fan_set_speed(i, target_rpm_fan[i]);
         else
             fan_set_speed(i, eeprom.fan_user_config[i].default_speed);
     }
 }
+
+// process thermal alerts - each alert should be triggered only once
+void process_thermal_alerts(void) {
+    static bool alert_triggered[MAX_THERMAL_ALERTS] = {false};
+    char msg[64];
+
+    for (uint8_t i = 0; i < MAX_THERMAL_ALERTS; i++) {
+        if (eeprom.thermal_alert[i].temperature == 0)
+            continue;
+        float temperature = compute_thermal_zone_temperature(eeprom.thermal_alert[i].thermal_zone);
+        if (isnan(temperature))
+            continue;
+        if (eeprom.thermal_alert[i].gt && temperature > eeprom.thermal_alert[i].temperature) {
+            if (!alert_triggered[i]) {
+                snprintf(msg, sizeof(msg), eeprom.thermal_alert[i].text, temperature);
+                twr_log_warning("process_thermal_alerts(): %s", msg);
+                alert_triggered[i] = true;
+                twr_radio_pub_string("alert", eeprom.thermal_alert[i].text);
+            }
+        } else if (!eeprom.thermal_alert[i].gt && temperature < eeprom.thermal_alert[i].temperature) {
+            if (!alert_triggered[i]) {
+                snprintf(msg, sizeof(msg), eeprom.thermal_alert[i].text, temperature);
+                twr_log_warning("process_thermal_alerts(): %s", msg);
+                alert_triggered[i] = true;
+                twr_radio_pub_string("alert", eeprom.thermal_alert[i].text);
+            }
+        } else {
+            alert_triggered[i] = false;
+        }
+    }
+}
+
 
 // ==== FAN RPM reading ====
 // this is called every 1 ms by SDK
@@ -487,9 +560,7 @@ void adc_compute_calibration(void)
         eeprom.adc_calibration[i].present = true;
         eeprom.adc_calibration[i].calibrated = true;
         adc_runtime[i].enabled = true;
-#ifdef DEBUG_ADC_CALIBRATION
-        twr_log_debug("adc_compute_calibration(): ADC channel %i, gain=%.5f, offset=%.2f", i, eeprom.adc_calibration[i].gain, eeprom.adc_calibration[i].offset);
-#endif
+        twr_log_info("adc_compute_calibration(): ADC channel %i, gain=%.5f, offset=%.2f", i, eeprom.adc_calibration[i].gain, eeprom.adc_calibration[i].offset);
     }
 }
 
@@ -539,6 +610,11 @@ void adc_calibration_callback(void * param) {
 #ifdef DEBUG_ADC_CALIBRATION
     twr_log_debug("adc_calibration_callback(): stable=%i, tmin=%.2f, tmax=%.2f", stable, tmin, tmax);
 #endif
+    if (adc_calibration_measure_point_pos > 0 && fabs(adc_last_calibration_temperature - adc_calibration_measure_ring[adc_calibration_measure_ring_pos].avg_temperature) > ADC_CALIBRATION_TEMP_DELTA) {
+        twr_led_set_mode(&led, TWR_LED_MODE_FLASH);
+    } else {
+        twr_led_set_mode(&led, TWR_LED_MODE_ON);
+    }
     if (stable)
     {
         // check if temperature changed enough since last calibration point
@@ -547,20 +623,17 @@ void adc_calibration_callback(void * param) {
             // compute average values from ring buffer
             adc_calibration_measure_t avg;
             memset(&avg, 0, sizeof(avg));
-            for (uint8_t i = 0; i < ADC_CALIBRATION_RING_LEN; i++)
+            for (uint8_t i = 0; i < lena(adc_calibration_measure_ring); i++)
             {
                 avg.avg_temperature += adc_calibration_measure_ring[i].avg_temperature;
                 for (uint8_t j = 0; j < ADC_CHANNEL_COUNT; j++)
                 {
-// #ifdef DEBUG_ADC_CALIBRATION
-//                     twr_log_debug("adc_calibration_callback(): ADC calibration point %i, ADC %i: Temperature=%.2f, ADC Value=%u", i, j, adc_calibration_measure_ring[i].avg_temperature, adc_calibration_measure_ring[i].adc_value[j]);
-// #endif                    
                     avg.adc_value[j] += adc_calibration_measure_ring[i].adc_value[j] / ADC_CALIBRATION_RING_LEN;
                 }
             }
             avg.avg_temperature /= (float)ADC_CALIBRATION_RING_LEN;
 #ifdef DEBUG_ADC_CALIBRATION
-            for (uint8_t j = 0; j < ADC_CHANNEL_COUNT; j++)
+            for (uint8_t j = 0; j < lena(avg.adc_value); j++)
             {
                 twr_log_debug("adc_calibration_callback(): ADC %i calibration point %i: Temperature=%.2f, ADC Value=%u", j, adc_calibration_measure_point_pos, avg.avg_temperature, avg.adc_value[j]);
             }
@@ -571,26 +644,30 @@ void adc_calibration_callback(void * param) {
             if (++adc_calibration_measure_point_pos >= ADC_CALIBRATION_POINTS)
             {
                 adc_compute_calibration();
-                adc_calibration_task_id = 0;
                 twr_scheduler_unregister(adc_calibration_task_id);
+                adc_calibration_task_id = 0;
 #ifdef DEBUG_ADC_CALIBRATION
                 twr_log_debug("adc_calibration_callback(): writing calibration data to eeprom");
 #endif
                 eeprom_write();
+                twr_radio_pub_string("adc/calibration/state", "done");
+                twr_led_set_mode(&led, TWR_LED_MODE_OFF);
 #ifdef DEBUG_ADC_CALIBRATION
                 twr_log_debug("adc_calibration_callback(): eeprom write done");
 #endif
             } else {
                 // start next calibration step
+                twr_log_info("adc_calibration_callback(): ADC calibration point %i done, avg temp=%.1f°C, waiting for next point with at least %.1f°C difference", adc_calibration_measure_point_pos-1, avg.avg_temperature, ADC_CALIBRATION_TEMP_DELTA);
+                twr_radio_pub_string("adc/calibration/state", "waiting for next point");
                 twr_scheduler_plan_current_relative(ADC_CALIBRATION_STEP_INTERVAL);
             }
             return;
         }
         // compute average values from ring buffer
         float avg_adc_value[ADC_CHANNEL_COUNT] = {0.0};
-        for (uint8_t i = 0; i < ADC_CALIBRATION_RING_LEN; i++)
+        for (uint8_t i = 0; i < lena(adc_calibration_measure_ring); i++)
         {
-            for (uint8_t j = 0; j < ADC_CHANNEL_COUNT; j++)
+            for (uint8_t j = 0; j < lena(avg_adc_value); j++)
             {
                 avg_adc_value[j] += (float)adc_calibration_measure_ring[i].adc_value[j];
             }
@@ -608,6 +685,9 @@ void adc_calibration_start(void)
     memset(adc_calibration_measure_point, 0, sizeof(adc_calibration_measure_point));
     memset(adc_calibration_measure_ring, 0, sizeof(adc_calibration_measure_ring));
     adc_calibration_task_id = twr_scheduler_register(adc_calibration_callback, NULL, twr_tick_get() + ADC_CALIBRATION_STEP_INTERVAL);
+    twr_log_info("adc_calibration_start(): ADC calibration started");
+    twr_radio_pub_string("adc/calibration/state", "started");
+    twr_led_set_mode(&led, TWR_LED_MODE_ON);
 }
 
 // stop ADC calibration
@@ -616,6 +696,9 @@ void adc_calibration_stop(void)
     if (adc_calibration_task_id > 0)
         twr_scheduler_unregister(adc_calibration_task_id);
     adc_calibration_task_id = 0;
+    twr_log_warning("adc_calibration_stop(): ADC calibration stopped");
+    twr_radio_pub_string("adc/calibration/state", "cancelled");
+    twr_led_set_mode(&led, TWR_LED_MODE_OFF);
 }
 
 
@@ -848,33 +931,7 @@ void application_task(void)
                     sensor_runtime.temp_adc[0], sensor_runtime.temp_adc[1], sensor_runtime.temp_adc[2], sensor_runtime.temp_adc[3],
                     sensor_runtime.temp_adc[4], sensor_runtime.temp_adc[5]);
 #endif
-    // uint8_t adc_count = 0;
-    // tmin = NAN;
-    // tmax = NAN;
-    // tavg = 0.0;
-    // for (uint8_t t = 0; t < ADC_CHANNEL_COUNT; t++)
-    // {
-    //     if (adc_runtime[t].enabled && adc_calibration[t].calibrated) {
-    //         twr_log_debug("APP: ADC thermometer %i: %.2f (raw=%i)", t, adc_runtime[t].temperature, adc_runtime[t].raw);
-    //         if (isnan(tmin) || adc_runtime[t].temperature < tmin)
-    //             tmin = adc_runtime[t].temperature;
-    //         if (isnan(tmax) || adc_runtime[t].temperature > tmax)
-    //             tmax = adc_runtime[t].temperature;
-    //         tavg += adc_runtime[t].temperature;
-    //         adc_count++;
-    //     }
-    // }
-    // if (adc_count > 0) {
-    //     tavg /= (float)adc_count;
-    //     twr_log_debug("APP: ADC thermometers: %i devices, min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", adc_count, tmin, tmax, tavg, tmax-tmin);
-    // }
-    // for (uint8_t t = 0; t < ADC_CHANNEL_COUNT; t++)
-    // {
-    //     if (adc_runtime[t].enabled) {
-    //         twr_log_debug("APP: ADC thermometer %i: %.2f", t, adc_runtime[t].temperature);
-    //     }
-    // }
-    twr_adc_async_measure(TWR_ADC_CHANNEL_A0);  // TODO - place this to some periodic task, it will measure all ADC channels starting with A0
+    twr_adc_async_measure(TWR_ADC_CHANNEL_A0);  // this has to be in some periodic task, it will measure all ADC channels starting with A0
     // pca9685_set_pwm(PCA9685_CHANNEL_ALL, ((counter+2)*256)&0x0FFF);
 // #ifdef DEBUG_PCA9685
 //     uint8_t tmp[4] = {0, 0, 0, 0};
@@ -885,6 +942,7 @@ void application_task(void)
     // control logic
     process_map_rules();
     publish_temperatures();
+    process_thermal_alerts();
     
     // rescan 1-wire bus if requested
     if (ow_rescan) {
@@ -893,5 +951,5 @@ void application_task(void)
     }
 
     // Plan next run of this task in 1000 ms
-    twr_scheduler_plan_current_from_now(10000);
+    twr_scheduler_plan_current_from_now(1000);
 }

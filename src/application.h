@@ -25,8 +25,8 @@
 #define DEBUG_ADC               true
 #define DEBUG_ADC_CALIBRATION   true
 // #define DEBUG_PCA9685           true
-// #define DEBUG_CONTROL           true
-#define DEBUG_MQTT              true
+#define DEBUG_CONTROL           true
+// #define DEBUG_MQTT              true
 // #define DEBUG_EEPROM            true
 #endif
 
@@ -116,8 +116,8 @@ typedef struct {
 // ADC configuration
 #define ADC_CHANNEL_COUNT 6
 // real measured values for ADC channels
-#define ADC_DEFAULT_OFFSET 79.0
-#define ADC_DEFAULT_GAIN -0.00162
+#define ADC_DEFAULT_OFFSET 98.76
+#define ADC_DEFAULT_GAIN -0.00211
 
 // ADC calibration
 #define ADC_CALIBRATION_TEMP_DELTA 20.0
@@ -156,11 +156,14 @@ typedef struct {
     uint32_t crc;
 } __attribute__((packed)) eeprom_t;
 
+extern twr_led_t led;
 extern eeprom_t eeprom;
 extern bool ow_rescan;
 extern sensor_runtime_t sensor_runtime;
 extern ow_index_t ow_index[SENSOR_MAX_COUNT];
 
 int ow_runtime_idx(uint8_t list_idx);
+
+#define lena(a) (sizeof(a) / sizeof(a[0]))
 
 #endif

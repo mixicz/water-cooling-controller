@@ -102,6 +102,8 @@ int hex2int(char c) {
         return c - '0';
     if (c >= 'A' && c <= 'F')
         return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
     return -1;
 }
 
@@ -157,7 +159,6 @@ bool config_set_sensor_fixed(const char * cfg, const char *topic) {
         return false;
     }
 
-    int end = float_end(&cfg[4]);
     float temperature = strtof(&cfg[4], NULL);
 
     eeprom.sensor_const[index].temperature = temperature;
@@ -581,7 +582,7 @@ bool pub_config_map_rule(uint8_t index) {
 bool pub_config_thermal_alert(uint8_t index) {
     uint8_t i;
     for (i = 0; i < MAX_THERMAL_ALERTS; i++) {
-        if (eeprom.thermal_alert[i].thermal_zone != 0) {
+        if (eeprom.thermal_alert[i].temperature != 0) {
             if (index == 0)
                 break;
             index--;
@@ -706,7 +707,7 @@ void publish_temperatures(void) {
             last_publish_i2c[i] = twr_tick_get();
             last_sensor_runtime.temp_i2c[i] = sensor_runtime.temp_i2c[i];
             sprintf(topic_buff, "thermometer/%d:%d/temperature", SENSOR_BUS_I2C/16, i);
-            bc_radio_pub_float(topic_buff, &sensor_runtime.temp_i2c[i]);
+            twr_radio_pub_float(topic_buff, &sensor_runtime.temp_i2c[i]);
         }
     }
 
@@ -720,7 +721,7 @@ void publish_temperatures(void) {
             last_publish_onewire[i] = twr_tick_get();
             last_sensor_runtime.temp_onewire[i] = sensor_runtime.temp_onewire[i];
             sprintf(topic_buff, "thermometer/%d:%d/temperature", SENSOR_BUS_ONEWIRE/16, ow_index[i].idx_list);
-            bc_radio_pub_float(topic_buff, &sensor_runtime.temp_onewire[i]);
+            twr_radio_pub_float(topic_buff, &sensor_runtime.temp_onewire[i]);
         }
     }
 
@@ -734,7 +735,7 @@ void publish_temperatures(void) {
             last_publish_adc[i] = twr_tick_get();
             last_sensor_runtime.temp_adc[i] = sensor_runtime.temp_adc[i];
             sprintf(topic_buff, "thermometer/%d:%d/temperature", SENSOR_BUS_ADC/16, i);
-            bc_radio_pub_float(topic_buff, &sensor_runtime.temp_adc[i]);
+            twr_radio_pub_float(topic_buff, &sensor_runtime.temp_adc[i]);
         }
     }
 }

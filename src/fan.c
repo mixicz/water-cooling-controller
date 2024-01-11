@@ -447,6 +447,21 @@ void fan_calibration_step(void * ptr_fan)
         fan_compute_calibration(fan);
         // save calibration data to EEPROM
         eeprom_write();
+        
+        char topic[64];
+        sprintf(topic, "fan/calibration/%i/state", fan);
+        twr_radio_pub_string(topic, "done");
+
+        // check if no other fan is in calibration process and if so, turn off LED
+        bool calibration_in_progress = false;
+        for (uint8_t i = 0; i < MAX_FANS; i++) {
+            if (fan_runtime[i].calibration_in_progress == true) {
+                calibration_in_progress = true;
+                break;
+            }
+        }
+        if (calibration_in_progress == false)
+            twr_led_set_mode(&led, TWR_LED_MODE_OFF);
     } else {
 #ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("fan_calibration_step(): FAN %i set PWM=%i", fan, pwm);
@@ -471,4 +486,8 @@ void fan_calibration_start(uint8_t fan)
     fan_runtime[fan].calibration_in_progress = true;
     twr_pwm_set(fan_config[fan].pwm_port, FAN_PWM_MAX);
     twr_scheduler_register(fan_calibration_step, &fan_list[fan], twr_tick_get() + FAN_CALIBRATION_TIME_INIT);
+    char topic[64];
+    sprintf(topic, "fan/calibration/%i/state", fan);
+    twr_radio_pub_string(topic, "start");
+    twr_led_set_mode(&led, TWR_LED_MODE_BLINK_FAST);
 }
