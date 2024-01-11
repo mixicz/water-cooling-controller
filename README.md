@@ -132,8 +132,8 @@ Notes:
 Upon first start, all connected fans will be detected and calibrated.
 
 ### button
-- short press: TBD
-- long press: start NTC calibration process
+- short press: run detection of 1-wire devices
+- long press: start NTC/ADC calibration process
 - long press followed by short press before finishing NTC calibration: start [fan calibration process](#fan-calibration) (and cancel NTC calibration started by long press)
 - long press followed by long press: cancel NTC calibration started by long press
 
@@ -155,6 +155,16 @@ Calibration evaluates following scenarios:
 - disconnected PWM outputs (zero RPM on particular poutput through whole process),
 - fans without PWM control (constant non-zero RPM),
 - lower PWM range bound – specification defines only 20%-100% range, with 0%-20% as undefined behavior. Fans typically caps RPM at 20% for PWM values <20%, while some of them are able to go below 20%. When fan is able to go lower, controller will use all available range up to 10% / 0% PWM rate depending on detected RPM. When PWM output is marked as water pump (default is #5), 20% is always used as minimum PWM value regardless of detected settings.
+
+### NTC calibration
+Calibration is done by placing at least one 1-wire temperature sensor together with all connected NTC sensors to medium with constant temperature, waiting for readings to stabilize and repeat process with different temperature. Temperature difference must be at least 20°C. Best is to use cold and hot water and fix sensors together with decent spacing to allow more reliable temperature stabilization.
+
+Calibration process step by step:
+1. place sensors to cold water,
+1. long-press button on core module,
+1. wait for message about finished first measurement on USB / MQTT or LED start flashing,
+1. place sensors to hot water,
+1. wait for message about finished calibration on USB / MQTT or LED going completely off (it will stop flashing and turn on first, when large enough temperature difference is detected).
 
 ## License
 
