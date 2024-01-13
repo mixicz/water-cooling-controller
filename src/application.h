@@ -9,23 +9,24 @@
 #include <mqtt.h>
 
 // Application version
-// #define FW_VERSION "1.0"
+#define FW_VERSION "1.0"
 #define EEPROM_SIGNATURE        0x57434330
-#define EEPROM_VERSION          0x01
 
 #define MQTT_REPORT_TEMP_DELTA  0.2
 #define MQTT_REPORT_TEMP_INTERVAL 600000
 
 // #define DEBUG   true   // not needed, DEBUG is defined in ninja build file
 
+#undef DEBUG
+
 #ifdef DEBUG
 #define DEBUG_FAN_CALIBRATION   true
 // #define DEBUG_FAN               true
 // #define DEBUG_ONEWIRE           true
-#define DEBUG_ADC               true
+// #define DEBUG_ADC               true
 #define DEBUG_ADC_CALIBRATION   true
 // #define DEBUG_PCA9685           true
-#define DEBUG_CONTROL           true
+// #define DEBUG_CONTROL           true
 // #define DEBUG_MQTT              true
 // #define DEBUG_EEPROM            true
 #endif
@@ -106,7 +107,6 @@ typedef struct {
 
 // configuration structure
 typedef struct {
-    uint8_t version;
     uint16_t fan_ramp_up_step_time; // time in ms between 2 steps of FAN speed ramp up
     uint16_t fan_ramp_down_step_time; // time in ms between 2 steps of FAN speed ramp down
     uint16_t pump_ramp_up_step_time; // time in ms between 2 steps of pump speed ramp up
@@ -156,6 +156,7 @@ typedef struct {
     uint32_t crc;
 } __attribute__((packed)) eeprom_t;
 
+// global variables
 extern twr_led_t led;
 extern eeprom_t eeprom;
 extern bool ow_rescan;
@@ -163,6 +164,9 @@ extern sensor_runtime_t sensor_runtime;
 extern ow_index_t ow_index[SENSOR_MAX_COUNT];
 
 int ow_runtime_idx(uint8_t list_idx);
+void fill_mode_enable(bool enable);
+void fill_mode_set_speed(float speed);
+void adc_calibration_stop(void);
 
 #define lena(a) (sizeof(a) / sizeof(a[0]))
 

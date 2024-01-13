@@ -19,6 +19,7 @@ TODO
     - :heavy_check_mark: start/stop calibration (ADC only),
 - MQTT - commands:
     - start/stop calibration,
+    - fill mode
 - MQTT - set/get config values:
     - :heavy_check_mark: control logic,
     - ADC calibration values,
@@ -40,6 +41,25 @@ TODO
     * built-in temperature sensor on core module,
     * 1-wire bus for additional temperature sensors,
     * I2C bus for additional PWM LEDs via PCA9685,
+
+## HW description
+### Default sensor assignment
+Any connected sensors not mentioned here are not used to control the cooling by default, but they are reported over MQTT and you can setup yourown rules using them.
+
+#### I2C
+- `00` – only onboard sensor, not used for cooling control, but reported over MQTT
+
+#### 1-wire
+- `10` – outside ambient temperature (preferably placed in front of radiator intake to have air flowing around it),
+- `11` – inside case ambient temperature (preferably in upper part of case in front of venting holes or top radiator),
+
+#### ADC / NTC
+> [!NOTE]
+> We assume loop order (with sensors in parentheses): pump → (`20`)GPU(`21`) → small radiator → (`22`)CPU(`23`) → large radiator → pump, but in reality it is mostly about naming zones and most important thing is, that `20` should be placed at coolest part of loop and `23` at most warm part. It does not matter at all if there is an radiator between GPU and CPU or the order of CPU and GPU. Just assume we named first block in loop as GPU and second as CPU.
+- `20` - before GPU,
+- `21` - after GPU,
+- `22` - before CPU,
+- `23` - after CPU,
 
 ## Concepts
 - **sensor** – value from temperature sensor, each sensor have unique ID in form of 8-bit hexadecimal value, where bus is higher 4-bits and number are lower 4-bits:
@@ -69,9 +89,9 @@ Notes:
 > [!NOTE] 
 > We deliberately use short topic names in order to allow for larger payload, as topic+message must fit into 60 byte radio message.
 
-### `wc/-/config/*`
-- `wc/-/config/set` - sets configuration value to any of below options (confirmation message on `cfg/set` topic),
-- `wc/-/config/get` - dumps all configuration to MQTT `cfg/#` topics (e.g. `cfg/ow`, `cfg/sf`, `cfg/tz`),
+### `wc/-/cfg/*`
+- `wc/-/cfg/set` - sets configuration value to any of below options (confirmation message on `cfg/set` topic),
+- `wc/-/cfg/get` - dumps all configuration to MQTT `cfg/#` topics (e.g. `cfg/ow`, `cfg/sf`, `cfg/tz`),
 
 ### Sensor onewire
 - maps 1-wire sensor address to sensor ID
@@ -80,7 +100,7 @@ Notes:
     - *address* - 64-bit hexadecimal number as 1-wire device address
 
 ### Sensor fixed
-- maps fixed sensor value to sensor index
+- sets fixed sensor value
 - string representation as `F:<index>=<temperature>`, where
     - *index* - single hex digit (`0`..`F`) as fixed sensor index,
     - *temperature* - float value in °C
@@ -140,7 +160,8 @@ Upon first start, all connected fans will be detected and calibrated.
 ### LED
 - on - NTC calibration in progress, waiting for temperature stabilization
 - brief flashes - NTC calibration in progress, waiting for temperature change
-- blinking - fan calibration in progress
+- fast blinking - fan calibration in progress
+- slow blinking - fill mode
 - off - normal operation
 
 ## Calibration
@@ -165,6 +186,17 @@ Calibration process step by step:
 1. wait for message about finished first measurement on USB / MQTT or LED start flashing,
 1. place sensors to hot water,
 1. wait for message about finished calibration on USB / MQTT or LED going completely off (it will stop flashing and turn on first, when large enough temperature difference is detected).
+
+## Fill mode
+> [!CAUTION]
+> Never use filling mode with computer turned on! all fans and pump are disabled by default, only spinning up pump on button press.
+
+In order to ease filling up water loop, it is possible to use special fill mode. In this mode, fan are at minimum possible RPM (0% PWM – stopped if they support it) and pump is controlled by button on core module, switching PWM rate between 0% and configured value (default 30%) on each button press. LED blinks slowly in fill mode.
+
+Fill mode is enabled and controlled over MQTT topic `wc/-/cmd/fill` and `wc/-/cmd/fill-speed` with string commands:
+- `wc/-/cmd/fill` = `"start"` - starts fill mode with still pump and 30% PWM,
+- `wc/-/cmd/fill` = `"stop"` - ends filling mode and resumes normal operation,
+- `wc/-/cmd/fill-speed` = `<float>` - sets speed of active pump in interval 0..1 (e.g.)
 
 ## License
 

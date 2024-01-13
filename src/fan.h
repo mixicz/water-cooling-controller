@@ -66,5 +66,6 @@ void fan_set_speed(uint8_t fan, float speed);
 void fan_compute_calibration(uint8_t fan);
 void fan_calibration_step(void * ptr_fan);
 void fan_calibration_start(uint8_t fan);
+void fan_calibration_stop(uint8_t fan);
 
 #endif

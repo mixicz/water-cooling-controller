@@ -30,7 +30,6 @@ TODO list:
 eeprom_t eeprom = {
     .signature = EEPROM_SIGNATURE,
     .config = {
-        .version = EEPROM_VERSION,
         .fan_ramp_up_step_time = 6000 / FAN_PWM_MAX,        // 6 seconds to ramp up from 0 to 100% speed
         .fan_ramp_down_step_time = 30000 / FAN_PWM_MAX,     // 30 seconds to ramp up from 100% to 0% speed
         .pump_ramp_up_step_time = 4000 / FAN_PWM_MAX,       // 4 seconds to ramp up from 0 to 100% speed
@@ -66,13 +65,12 @@ eeprom_t eeprom = {
     },
     .thermal_zone = {
         { .name = "zero", .sensors = {0xF0, 0xF0}, .absolute = true},           // 0: virtual zone with constant value 0.0 °C
-        { .name = "temp_loop", .sensors = {0x23, 0xF0}, .absolute = false},     // 1: water temperature at end of loop
-        { .name = "temp_outside", .sensors = {0x10, 0xF0}, .absolute = false},  // 2
-        { .name = "temp_inside", .sensors = {0x11, 0xF0}, .absolute = false},   // 3
-        { .name = "delta_gpu", .sensors = {0x20, 0x21}, .absolute = true},      // 4
-        { .name = "delta_cpu", .sensors = {0x22, 0x23}, .absolute = true},      // 5
-        { .name = "delta_case", .sensors = {0x10, 0x11}, .absolute = true},     // 6: delta between inside and outside temperature
-        { .name = "delta_water", .sensors = {0x23, 0x10}, .absolute = true},    // 7: delta between water at end of loop and outside ambient temperature
+        { .name = "temp_loop", .sensors = {0x23, 0xF0}, .absolute = false},     // 1: water temperature at end of the loop
+        { .name = "temp_inside", .sensors = {0x11, 0xF0}, .absolute = false},   // 2: temperature inside the case
+        { .name = "delta_gpu", .sensors = {0x20, 0x21}, .absolute = true},      // 3
+        { .name = "delta_cpu", .sensors = {0x22, 0x23}, .absolute = true},      // 4
+        { .name = "delta_case", .sensors = {0x10, 0x11}, .absolute = true},     // 5: delta between inside and outside temperature
+        { .name = "delta_water", .sensors = {0x23, 0x10}, .absolute = true},    // 6: delta between water at end of loop and outside ambient temperature
     },
     .fan_group = {
         { .name = "pump", .fans = 0x10},        // 0
@@ -82,16 +80,15 @@ eeprom_t eeprom = {
         { .name = "rad_back", .fans = 0x08},    // 4
     },
     .map_rule = {
-        // { .name = "idle_pump", .thermal_zone = 0, .fan_group = 0, .temperature = {-0.1, 0.1}, .speed = {0.2, 0.2}}, // default rule to keep pump running at minimum speed at idle
-        { .name = "idle_rad", .thermal_zone = 0, .fan_group = 1, .temperature = {-0.1, 0.1}, .speed = {0.0, 0.0}}, // default rule to keep radiator fans off at idle
-        { .name = "gpu_pump", .thermal_zone = 4, .fan_group = 0, .temperature = {0.3, 3.0}, .speed = {0.2, 1.0}},
-        { .name = "cpu_pump", .thermal_zone = 5, .fan_group = 0, .temperature = {0.3, 3.0}, .speed = {0.2, 1.0}},
-        { .name = "case_ambient", .thermal_zone = 6, .fan_group = 1, .temperature = {10.0, 20.0}, .speed = {0.0, 0.8}},
-        { .name = "water_loop", .thermal_zone = 7, .fan_group = 1, .temperature = {5.0, 25.0}, .speed = {0.0, 1.0}},
+        { .name = "idle_rad", .thermal_zone = 0, .fan_group = 1, .temperature = {-0.1, 0.1}, .speed = {0.0, 0.0}},      // default rule to keep radiator fans off at idle
+        { .name = "gpu_pump", .thermal_zone = 3, .fan_group = 0, .temperature = {0.3, 3.0}, .speed = {0.2, 1.0}},       // control pump speed based on delta of temperatures on GPU block
+        { .name = "cpu_pump", .thermal_zone = 4, .fan_group = 0, .temperature = {0.3, 3.0}, .speed = {0.2, 1.0}},       // control pump speed based on delta of temperatures on CPU block
+        { .name = "water_loop", .thermal_zone = 6, .fan_group = 1, .temperature = {5.0, 25.0}, .speed = {0.0, 1.0}},    // control radiator fans based on delta between water at end of loop and outside ambient temperature
+        { .name = "case_ambient", .thermal_zone = 5, .fan_group = 1, .temperature = {10.0, 20.0}, .speed = {0.0, 0.8}},
     },
     .thermal_alert = {
         { .thermal_zone = 1, .temperature = 60.0, .gt = true, .text = "High water temp at EOL! t=%.1f"},
-        { .thermal_zone = 3, .temperature = 50.0, .gt = true, .text = "High temp in case! t=%.1f"},
+        { .thermal_zone = 2, .temperature = 50.0, .gt = true, .text = "High temp in case! t=%.1f"},
     },
 };
 
@@ -137,6 +134,24 @@ twr_button_t button;
 // Thermometer instance
 twr_tmp112_t tmp112;
 uint16_t button_click_count = 0;
+
+// ==== Fill mode ====
+/*
+## Fill mode
+> [!CAUTION]
+> Never use filling mode with computer turned on! all fans and pump are disabled by default, only spinning up pump on button press.
+
+In order to ease filling up water loop, it is possible to use special fill mode. In this mode, fan are at minimum possible RPM (0% PWM – stopped if they support it) and pump is controlled by button on core module, switching PWM rate between 0% and configured value (default 30%) on each button press. LED blinks slowly in fill mode.
+
+Fill mode is enabled and controlled over MQTT topic `wc/-/cmd/fill` and `wc/-/cmd/fill-speed` with string commands:
+- `wc/-/cmd/fill` = `"start"` - starts fill mode with still pump and 30% PWM,
+- `wc/-/cmd/fill` = `"stop"` - ends filling mode and resumes normal operation,
+- `wc/-/cmd/fill-speed` = `<float>` - sets speed of active pump in interval 0..1 (e.g.)
+*/
+
+bool fill_mode = false;
+bool fill_mode_pump = false;
+float fill_mode_speed = 0.3;
 
 // ==== control logic ====
 // read temperature from sensor with given ID
@@ -196,9 +211,72 @@ float compute_thermal_zone_temperature(uint8_t zone)
     return temperature;
 }
 
+// start/stops fill mode
+void fill_mode_enable(bool enable)
+{
+    if (enable) {
+        fill_mode = true;
+        fill_mode_pump = false;
+        fill_mode_speed = 0.3;
+
+        // cancel any ongoing ramp
+        for (uint8_t i = 0; i < MAX_FANS; i++)
+            fan_runtime[i].ramp_in_progress = false;
+        // cancel any calibration
+        for (uint8_t i = 0; i < MAX_FANS; i++)
+            fan_calibration_stop(i);
+        adc_calibration_stop();
+
+        twr_led_set_mode(&led, TWR_LED_MODE_BLINK_SLOW);
+        twr_log_info("fill_mode_enable(): fill mode enabled");
+        twr_radio_pub_string("cmd/fill", "start");
+    } else {
+        fill_mode = false;
+        fill_mode_pump = false;
+        fill_mode_speed = 0.3;
+        twr_led_set_mode(&led, TWR_LED_MODE_OFF);
+        twr_log_info("fill_mode_enable(): fill mode disabled");
+        twr_radio_pub_string("cmd/fill", "stop");
+    }
+}
+
+void fill_mode_set_speed(float speed)
+{
+    if (speed < 0.0)
+        speed = 0.0;
+    if (speed > 1.0)
+        speed = 1.0;
+    fill_mode_speed = speed;
+    twr_log_info("fill_mode_set_speed(): fill mode speed set to %.2f", fill_mode_speed);
+    char msg[16];
+    snprintf(msg, sizeof(msg), "%.2f", fill_mode_speed);
+    twr_radio_pub_string("cmd/fill-speed", msg);
+}
+
 // process all map rules
 void process_map_rules(void)
 {
+    // fill mode - all fans and pump are stopped
+    if (fill_mode) {
+        for (uint8_t i = 0; i < MAX_FANS; i++){
+            // use PWM directly to set fan speed to 0 except for pump which is set to either 0 or fill_mode_speed
+            // do not use fan_set_speed() as it would override fill_mode_pump, use twr_pwm_set(fan_config[fan].pwm_port, N) instead
+                    if (eeprom.fan_user_config[i].is_pump) {
+                        uint16_t pwm = fill_mode_pump ? fill_mode_speed * FAN_PWM_MAX : 0;
+#ifdef DEBUG_CONTROL
+                        twr_log_debug("process_map_rules(): Fill mode - setting pump %i speed to %i", i, pwm);
+#endif
+                        twr_pwm_set(fan_config[i].pwm_port, pwm);
+                    } else {
+#ifdef DEBUG_CONTROL
+                        twr_log_debug("process_map_rules(): Fill mode - setting fan %i speed to 0", i);
+#endif
+                        twr_pwm_set(fan_config[i].pwm_port, 0);
+                    }
+                }
+                return;
+    }
+
     float target_rpm_group[MAX_FAN_GROUPS];
     for (uint8_t i = 0; i < lena(target_rpm_group); i++)
         target_rpm_group[i] = -1.0;
@@ -443,6 +521,12 @@ void ow_init(void)
 
 
 // ==== ADC thermometers ====
+#define ADC_CALIBRATION_RING_LEN 8
+#define ADC_CALIBRATION_POINTS 2
+// sane values from real measurements (to cover disconnected thermometers)
+#define ADC_SANE_LOW 6000
+#define ADC_SANE_HIGH 58000
+
 // event handler for ADC thermometer
 void adc_event_handler(twr_adc_channel_t channel, twr_adc_event_t event, void *event_param)
 {
@@ -454,7 +538,7 @@ void adc_event_handler(twr_adc_channel_t channel, twr_adc_event_t event, void *e
         {
             // convert ADC value to temperature - check for sane calibration values
             // if (eeprom.adc_calibration[channel].calibrated)
-            if (fabs(eeprom.adc_calibration[channel].offset) > 1.0)
+            if (fabs(eeprom.adc_calibration[channel].offset) > 1.0 && value > ADC_SANE_LOW && value < ADC_SANE_HIGH)
                 temperature = (float)value * eeprom.adc_calibration[channel].gain + eeprom.adc_calibration[channel].offset;
             else
                 temperature = NAN;
@@ -514,12 +598,6 @@ Then we will repeat this process, but wait for at least ADC_CALIBRATION_TEMP_DEL
 Calibration points will be stored in adc_calibration_measure_point[] array.
 When we have all calibration points, we will compute ADC calibration data (offset and gain) and store it in adc_calibration[] array.
 */
-#define ADC_CALIBRATION_RING_LEN 8
-#define ADC_CALIBRATION_POINTS 2
-// sane values from real measurements
-#define ADC_SANE_LOW 6000
-#define ADC_SANE_HIGH 58000
-
 typedef struct 
 {
     float avg_temperature;  // average temperature from 1-wire thermometers
@@ -770,6 +848,21 @@ void button_event_handler(twr_button_t *self, twr_button_event_t event, void *ev
     // Log button event
     twr_log_info("APP: Button event: %i", event);
 
+    if (fill_mode) {
+        // fill mode is enabled, remap button events
+        // short press toggles pump
+        // long press exits fill mode
+        if (event == TWR_BUTTON_EVENT_CLICK) {
+            fill_mode_pump = !fill_mode_pump;
+            twr_log_info("button_event_handler(): fill mode pump %s", fill_mode_pump ? "enabled" : "disabled");
+            process_map_rules();    // update fan speeds
+        } else if (event == TWR_BUTTON_EVENT_HOLD) {
+            fill_mode_enable(false);
+        }
+
+        return;
+    }
+
     // Check event source
     if (event == TWR_BUTTON_EVENT_HOLD) {
         // flash LED to indicate long press
@@ -854,7 +947,6 @@ void application_init(void)
 #ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("init(): PWM init, FAN=%i, port=%i", f, fan_config[f].pwm_port);
 #endif
-        // fan_list[f] = f;
         _pwm_init(fan_config[f].pwm_port, FAN_PWM_MAX);
         twr_pwm_enable(fan_config[f].pwm_port);
         twr_gpio_init(fan_config[f].gpio_port);
@@ -863,7 +955,6 @@ void application_init(void)
         fan_set_speed(f, FAN_SPEED_INIT);
 #ifdef DEBUG_FAN_CALIBRATION
         twr_log_debug("init(): RPM reading init, FAN=%i, port=%i", f, fan_config[f].gpio_port);
-        // temporary to test calibration
 #endif
         if (!eeprom.fan_calibration[f].calibrated) {
             fan_calibration_start(f);
@@ -878,9 +969,6 @@ void application_init(void)
 
     // Initialize ADC
     adc_init();
-#ifdef DEBUG_ADC_CALIBRATION
-    // adc_calibration_start();
-#endif
 
     // Initialize PCA9685 PWM controller
     // pca9685_init();
@@ -897,6 +985,7 @@ void application_task(void)
     // Log task run and increment counter
     // twr_log_debug("APP: Task run (count: %d)", ++counter);
     // twr_log_debug("APP: RPM: %d", get_rpm(1));
+#ifdef DEBUG_ONEWIRE
     float tmin = NAN;
     float tmax = NAN;
     float tavg = 0.0;
@@ -914,6 +1003,7 @@ void application_task(void)
     }
     tavg /= (float)ow_slave_count;
     twr_log_info("APP: 1-wire thermometers: %i devices (%i active), min=%.2f, max=%.2f, avg=%.2f, delta=%.2f", ow_slave_count, ow_count, tmin, tmax, tavg, tmax-tmin);
+#endif
     // print out whole sensor_runtime structure with each sensor group on separate line
     /*
     typedef struct {
@@ -923,17 +1013,19 @@ void application_task(void)
     } sensor_runtime_t;
     */
 #ifdef DEBUG
-    twr_log_info("APP: sensor_runtime: temp_i2c: [%.2f]", sensor_runtime.temp_i2c[0]);
-    twr_log_info("APP: sensor_runtime: temp_onewire: [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f]", 
-                    sensor_runtime.temp_onewire[0], sensor_runtime.temp_onewire[1], sensor_runtime.temp_onewire[2], sensor_runtime.temp_onewire[3],
-                    sensor_runtime.temp_onewire[4], sensor_runtime.temp_onewire[5], sensor_runtime.temp_onewire[6], sensor_runtime.temp_onewire[7]);
-    twr_log_info("APP: sensor_runtime: temp_adc: [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f]",
-                    sensor_runtime.temp_adc[0], sensor_runtime.temp_adc[1], sensor_runtime.temp_adc[2], sensor_runtime.temp_adc[3],
-                    sensor_runtime.temp_adc[4], sensor_runtime.temp_adc[5]);
+    if (counter % 60 == 0) {
+        twr_log_info("APP: sensor_runtime: temp_i2c: [%.2f]", sensor_runtime.temp_i2c[0]);
+        twr_log_info("APP: sensor_runtime: temp_onewire: [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f, %.2f]", 
+                        sensor_runtime.temp_onewire[0], sensor_runtime.temp_onewire[1], sensor_runtime.temp_onewire[2], sensor_runtime.temp_onewire[3],
+                        sensor_runtime.temp_onewire[4], sensor_runtime.temp_onewire[5], sensor_runtime.temp_onewire[6], sensor_runtime.temp_onewire[7]);
+        twr_log_info("APP: sensor_runtime: temp_adc: [%.2f, %.2f, %.2f, %.2f, %.2f, %.2f]",
+                        sensor_runtime.temp_adc[0], sensor_runtime.temp_adc[1], sensor_runtime.temp_adc[2], sensor_runtime.temp_adc[3],
+                        sensor_runtime.temp_adc[4], sensor_runtime.temp_adc[5]);
+    }
 #endif
     twr_adc_async_measure(TWR_ADC_CHANNEL_A0);  // this has to be in some periodic task, it will measure all ADC channels starting with A0
-    // pca9685_set_pwm(PCA9685_CHANNEL_ALL, ((counter+2)*256)&0x0FFF);
 // #ifdef DEBUG_PCA9685
+    // pca9685_set_pwm(PCA9685_CHANNEL_ALL, ((counter+2)*256)&0x0FFF);
 //     uint8_t tmp[4] = {0, 0, 0, 0};
 //     pca9685_read(0x06, tmp, 4);
 //     twr_log_debug("APP: PCA9685: regs: %02x %02x %02x %02x", tmp[0], tmp[1], tmp[2], tmp[3]);

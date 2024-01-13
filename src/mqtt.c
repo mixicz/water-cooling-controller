@@ -20,8 +20,10 @@ static char mqtt_bufer[256];
 static twr_radio_sub_t mqtt_subs[] = {
     // state/set
     //     {"led-pwm/-/config/set", BC_RADIO_SUB_PT_STRING, led_config_set, NULL },
-    {"wc/-/config/set", BC_RADIO_SUB_PT_STRING, config_set, mqtt_bufer},
-    {"wc/-/config/get", BC_RADIO_SUB_PT_NULL, config_get, mqtt_bufer},
+    {"wc/-/cfg/set", BC_RADIO_SUB_PT_STRING, config_set, mqtt_bufer},
+    {"wc/-/cfg/get", BC_RADIO_SUB_PT_NULL, config_get, mqtt_bufer},
+    {"wc/-/cmd/fill", BC_RADIO_SUB_PT_STRING, command_fill, mqtt_bufer},
+    {"wc/-/cmd/fill-speed", BC_RADIO_SUB_PT_FLOAT, command_fill_speed, mqtt_bufer},
 };
 
 // MQTT callbacks
@@ -685,6 +687,44 @@ void config_get(uint64_t *id, const char *topic, void *value, void *param) {
 #endif
     pub_config_start();
 }
+
+/*
+Fill mode is enabled and controlled over MQTT topic `wc/-/cmd/fill` and `wc/-/cmd/fill-speed` with commands:
+- `wc/-/cmd/fill` = `"start"` - starts fill mode with still pump and 30% PWM,
+- `wc/-/cmd/fill` = `"stop"` - ends filling mode and resumes normal operation,
+- `wc/-/cmd/fill-speed` = `<float>` - sets speed of active pump in interval 0..1 (e.g.)
+*/
+void command_fill(uint64_t *id, const char *topic, void *value, void *param) {
+    char *cmd = (char *)value;
+#ifdef DEBUG_MQTT
+    twr_log_debug("command_fill(): MQTT topic: '%s', payload: '%s'", topic, cmd);
+#endif
+
+    if (strcmp(cmd, "start") == 0) {
+        fill_mode_enable(true);
+    } else if (strcmp(cmd, "stop") == 0) {
+        fill_mode_enable(false);
+    } else {
+        mqtt_error("invalid command", topic, cmd);
+    }
+}
+
+void command_fill_speed(uint64_t *id, const char *topic, void *value, void *param) {
+    float speed = *(float *)value;
+#ifdef DEBUG_MQTT
+    twr_log_debug("command_fill_speed(): MQTT topic: '%s', payload: '%f'", topic, speed);
+#endif
+
+    if (speed < 0 || speed > 1) {
+        char spd[16];
+        snprintf(spd, sizeof(spd), "%f", speed);
+        mqtt_error("invalid speed, must be (0..1)", topic, spd);
+        return;
+    }
+
+    fill_mode_set_speed(speed);
+}
+
 
 
 // MQTT publish topics

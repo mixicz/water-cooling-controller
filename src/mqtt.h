@@ -11,6 +11,8 @@ int hex2int(char c);
 // topic callback headers
 void config_set(uint64_t *id, const char *topic, void *value, void *param);
 void config_get(uint64_t *id, const char *topic, void *value, void *param);
+void command_fill(uint64_t *id, const char *topic, void *value, void *param);
+void command_fill_speed(uint64_t *id, const char *topic, void *value, void *param);
 
 void publish_temperatures(void);
 void mqtt_init(void);
