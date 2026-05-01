@@ -1,0 +1,28 @@
+99.59 <D> adc_compute_calibration(): ADC channel 0, Point 0: Temperature=37.32, ADC Value=25704, Point 1: Temperature=14.16, ADC Value=39952
+99.61 <D> adc_compute_calibration(): ADC channel 0, gain=-0.00162, offset=79.08
+99.62 <D> adc_compute_calibration(): ADC channel 1, Point 0: Temperature=37.32, ADC Value=25808, Point 1: Temperature=14.16, ADC Value=39248
+99.63 <D> adc_compute_calibration(): ADC channel 1, gain=-0.00172, offset=81.77
+99.64 <D> adc_compute_calibration(): ADC channel 2, Point 0: Temperature=37.32, ADC Value=25392, Point 1: Temperature=14.16, ADC Value=39040
+99.66 <D> adc_compute_calibration(): ADC channel 2, gain=-0.00170, offset=80.39
+99.67 <D> adc_compute_calibration(): ADC channel 3, Point 0: Temperature=37.32, ADC Value=25376, Point 1: Temperature=14.16, ADC Value=40160
+99.68 <D> adc_compute_calibration(): ADC channel 3, gain=-0.00157, offset=77.05
+99.69 <D> adc_compute_calibration(): ADC channel 4, Point 0: Temperature=37.32, ADC Value=26640, Point 1: Temperature=14.16, ADC Value=36880
+99.70 <D> adc_compute_calibration(): ADC channel 4, gain=-0.00226, offset=97.54
+99.71 <D> adc_compute_calibration(): ADC channel 5, Point 0: Temperature=37.32, ADC Value=25376, Point 1: Temperature=14.16, ADC Value=39664
+99.73 <D> adc_compute_calibration(): ADC channel 5, gain=-0.00162, offset=78.43
+
+
+136.31 <D> adc_compute_calibration(): ADC channel 0, Point 0: Temperature=11.93, ADC Value=41214, Point 1: Temperature=79.83, ADC Value=8984
+136.33 <D> adc_compute_calibration(): ADC channel 0, gain=-0.00211, offset=98.76
+136.34 <D> adc_compute_calibration(): ADC channel 1, Point 0: Temperature=11.93, ADC Value=40866, Point 1: Temperature=79.83, ADC Value=9212
+136.35 <D> adc_compute_calibration(): ADC channel 1, gain=-0.00215, offset=99.59
+136.36 <D> adc_compute_calibration(): ADC channel 2, Point 0: Temperature=11.93, ADC Value=40786, Point 1: Temperature=79.83, ADC Value=9124
+136.38 <D> adc_compute_calibration(): ADC channel 2, gain=-0.00214, offset=99.40
+136.39 <D> adc_compute_calibration(): ADC channel 3, Point 0: Temperature=11.93, ADC Value=41342, Point 1: Temperature=79.83, ADC Value=8786
+136.40 <D> adc_compute_calibration(): ADC channel 3, gain=-0.00209, offset=98.16
+136.41 <D> adc_compute_calibration(): ADC channel 4, Point 0: Temperature=11.93, ADC Value=39176, Point 1: Temperature=79.83, ADC Value=11928
+136.43 <D> adc_compute_calibration(): ADC channel 4, gain=-0.00249, offset=109.55
+136.44 <D> adc_compute_calibration(): ADC channel 5, Point 0: Temperature=11.93, ADC Value=41182, Point 1: Temperature=79.83, ADC Value=8888
+136.45 <D> adc_compute_calibration(): ADC channel 5, gain=-0.00210, offset=98.52
+136.46 <D> adc_calibration_callback(): writing calibration data to eeprom
+136.60 <D> adc_calibration_callback(): eeprom write done
